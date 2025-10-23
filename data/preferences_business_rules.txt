@@ -1,0 +1,85 @@
+Store Policy in Plain Text (Natural Language)
+Store name: CoralBricks.ai
+Contact: support@coralbricks.ai
+Effective date: 10/25/2025
+
+1) What we care about most
+• We want shoppers to quickly find the right product with fresh availability and accurate pricing.
+• Our default result order should feel relevant first, then in-stock, then good value.
+• We prefer authentic, helpful tone in any AI-written summaries (never pushy).
+
+2) Default behavior
+• Show 24 results per page.
+• Rank by overall relevance. If two items are equally relevant, prefer the one that is in stock, then newer, then higher-rated.
+• Always hide out-of-stock items unless the shopper explicitly asks to "include sold out".
+
+3) Filters to apply by default
+• Availability: In stock only.
+• Currency: USD.
+• Price guardrail: Hide items over $5,000 unless the shopper mentions "luxury" or sets a higher budget.
+• Condition: Show both vintage and new unless the shopper specifies.
+
+4) How we handle the shopper's words
+• Respect exact constraints like "under $300", "red", "size 8x10", "Swedish cabinet".
+• Expand synonyms quietly (e.g., armchair ≈ reading chair, sofa ≈ couch, sideboard ≈ credenza).
+• If a query is vague, ask one helpful follow-up (max one) before showing results.
+
+5) Relevance signals (what to boost)
+• Strong boost for items that match: color, size/dimensions, and category stated in the query.
+• Moderate boost for: in-stock, new arrivals (last 30 days), bestsellers, 4★+ reviews, fast-ship.
+• Light boost for: high margin (if close in relevance), curated collections, seasonal promotions.
+
+6) Things to down-rank or exclude
+• Down-rank poor images (missing main photo).
+• Down-rank items with frequent returns or low ratings.
+• Exclude categories: Gift Cards and Clearance when the shopper is browsing (but include if they explicitly ask).
+
+7) Business rules (everyday)
+• If the query mentions "new", "latest", or "just arrived", boost New Arrivals.
+• If the query includes "under $X", enforce the budget strictly.
+• If the shopper asks for "sustainable" or "eco-friendly", prefer products marked sustainable or recycled material.
+• When a shopper says "gift", prefer items with giftable packaging and easy returns.
+
+8) Personalization intent examples
+Use these only when the shopper provides the cue. Do not assume demographics.
+• "for mom" → Prefer comfortable seating (armrests, higher back), non-slippery fabrics (e.g., velvet over slick leather), seat height ≥ 17", weight ≤ 75 lb for easier moving, budget as stated.
+• "for small apartments" → Prefer compact dimensions; de-boost items wider than 72" for sofas and 48" for consoles unless asked.
+• "for pets" → Prefer stain-resistant or performance fabric and washable materials.
+
+Example rule in words:
+A search for mom should result in comfortable, supportive chairs (armrests, high back, padded seat), non-slippery fabrics, and seat height ≥ 17", under the budget mentioned. If no budget is given, show a balanced selection from $200–$1,000, with in-stock items first.
+
+9) Category-specific guidance
+• Chairs: Prefer listings with armrests, seat height provided, and clear upholstery details.
+• Rugs: If size is missing, infer from title/description; otherwise ask one follow-up.
+• Lighting: Prefer UL-listed or safety-noted products when the query is for a nursery or elderly care.
+
+10) Promotions (time-boxed)
+• Holiday 2025 (Nov 15–Dec 31): Boost "Holiday 2025 Collection" by +40%.
+• Warehouse Sale (Mar 1–Mar 7): Boost "Clearance" only if shopper asks for deals; otherwise keep hidden.
+
+11) Merchandising priorities (tie-breakers)
+When two items tie on relevance and stock:
+1. Prefer newer (based on publish/update date).
+2. Prefer better images (≥ 3 photos).
+3. Prefer lower price if within 10% of each other; otherwise, prefer higher rating.
+
+12) Tone & content of AI results
+• Tone: Friendly, concise, matter-of-fact.
+• Always include: price, stock status, materials, and why it matches the request.
+• Never invent specs, details or availability. If unsure, say "I don't have that detail" and show the product link.
+
+13) Fallbacks & safety
+• If no match, show closest alternatives and explain the difference (e.g., size or budget off).
+• If the query asks for restricted items (policy-sensitive), refuse and suggest safe alternatives.
+• If multiple constraints conflict (e.g., 8x10 rug under $20), politely clarify once.
+
+14) Observability we want
+• Track: queries, clicks, add-to-carts, and purchases tied to query sessions (privacy-safe).
+• Report weekly: top queries, zero-result queries, slow queries (P95), out-of-stock impressions.
+
+15) Overrides we can flip quickly
+• "Promote Collection X": turn on/off with a percentage boost.
+• "Strict budget mode": enforce budgets exactly; no over-budget items in top 12.
+• "New arrivals first": temporary switch for campaigns.
+

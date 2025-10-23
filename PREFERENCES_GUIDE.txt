@@ -1,0 +1,315 @@
+====================================
+PREFERENCES SYSTEM INTEGRATION GUIDE
+====================================
+
+Overview:
+---------
+The preferences system allows you to control search behavior, ranking, filtering, and chat tone 
+through a plain-text configuration file WITHOUT changing code. The system supports both:
+1. Structured key=value format (for developers)
+2. Natural language business rules (for business users)
+
+Files:
+------
+1. data/preferences.txt                    - Your current structured preferences
+2. data/preferences_business_rules.txt     - Natural language business rules (client format)
+3. preferences_parser.py                   - Parser that converts preferences to config
+4. search_api.py                          - Main API (now integrated with preferences)
+5. test_preferences_integration.py        - Test suite for preferences integration
+
+How It Works:
+-------------
+
+┌─────────────────────┐
+│ preferences.txt     │  ← Edit this file (plain text)
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ PreferencesParser   │  ← Parses text → structured config
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ search_api.py       │  ← Uses config for ranking/filtering
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│ Search Results      │  ← Boosted, filtered, personalized
+└─────────────────────┘
+
+
+What You Can Control Through Preferences:
+------------------------------------------
+
+1. SEARCH BEHAVIOR:
+   - Number of results to return (k)
+   - Maximum results per page
+   - Minimum similarity score threshold
+
+2. DEFAULT FILTERS:
+   - In-stock only: Yes/No
+   - Price constraints: max/min
+   - Category filters
+   
+3. BOOSTING RULES:
+   - Tag boosting: quick-dry:1.2, women:1.1
+   - Category boosting
+   - Attribute-based boosting
+   
+4. RANKING SIGNALS:
+   - In-stock items: 1.2x boost
+   - New arrivals: 1.15x boost
+   - High ratings: 1.1x boost
+   - Color matches: 1.25x boost
+   - Size matches: 1.2x boost
+   
+5. PERSONALIZATION:
+   - "for mom" → boost comfortable seating, armrests
+   - "for small apartments" → boost compact items
+   - "for pets" → boost stain-resistant fabrics
+   
+6. RESPONSE FORMATTING:
+   - Tone: friendly, concise, matter-of-fact
+   - Style: bullets, paragraphs
+   - Include price: Yes/No
+   - Include availability: Yes/No
+   
+7. CHAT SETTINGS:
+   - Temperature: 0.3 (more focused) to 0.9 (more creative)
+   - Max tokens: response length
+   - Grounding strictness
+   - Citation requirements
+
+
+Current Implementation:
+-----------------------
+
+✅ COMPLETED:
+- Preferences parser (structured + natural language)
+- Search integration with boosting
+- Default filter application
+- Budget extraction from queries ("under $50")
+- Tag-based boosting
+- In-stock boosting
+- Color matching boost
+- Chat tone configuration
+- Preferences hot-reload endpoint
+- Health check with preferences status
+
+🔄 HOW IT APPLIES IN REAL-TIME:
+
+Example Query: "black running shorts under $60"
+
+Step 1: Parse query
+   ↓ Extract: color="black", category="shorts", budget=60
+
+Step 2: Load preferences
+   ↓ k=8, in_stock=true, boost tags: running:1.15
+
+Step 3: OpenSearch vector search
+   ↓ Fetch 24 results (3x k for re-ranking)
+
+Step 4: Apply filters
+   ↓ Keep only: in_stock=true, price<=60
+
+Step 5: Apply boosting
+   ↓ Product with "black" in title: 1.25x
+   ↓ Product with "running" tag: 1.15x
+   ↓ Product in stock: 1.2x
+   ↓ Combined: score × 1.25 × 1.15 × 1.2 = score × 1.725
+
+Step 6: Re-rank by boosted score
+   ↓ Sort by boosted_score (highest first)
+
+Step 7: Return top k=8 results
+   ✓ All matching preferences
+
+
+Using Different Preferences Files:
+----------------------------------
+
+Option 1: Use structured format (data/preferences.txt)
+------------------------------------------------------
+k=8
+filters.required=in_stock:true
+filters.optional=price<=100
+boost.tags=quick-dry:1.2,women:1.1
+tone=friendly
+
+Option 2: Use natural language (data/preferences_business_rules.txt)
+--------------------------------------------------------------------
+"Show 24 results per page"
+"Hide out-of-stock items"
+"Strong boost for color matches"
+"Tone: friendly, concise, matter-of-fact"
+
+To switch files, update preferences_parser.py line 17:
+    def __init__(self, preferences_path: str = "data/preferences.txt"):
+                                                    ^^^^^^^^^^^^^^^^^^^^^^
+                                                    Change this path
+
+
+Testing the Integration:
+-------------------------
+
+1. Start the API server:
+   $ python search_api.py
+
+2. In another terminal, run tests:
+   $ python test_preferences_integration.py
+
+3. Tests will verify:
+   ✓ Preferences loading
+   ✓ Budget constraint extraction
+   ✓ Tag boosting
+   ✓ In-stock filtering
+   ✓ Color matching
+   ✓ Chat tone application
+
+
+API Endpoints:
+--------------
+
+GET /health
+   Returns: System health + preferences status
+   
+POST /search-fast
+   Body: {"query": "text", "k": 5, "filters": {...}}
+   Returns: Search results with preference-based ranking
+   
+POST /chat
+   Body: {"message": "text"}
+   Returns: Conversational response with preference-based tone
+   
+POST /admin/reload-preferences
+   Body: (none)
+   Returns: Reloaded preferences config
+
+
+Hot-Reload:
+-----------
+Preferences are automatically checked for changes on each request.
+If the file has been modified, it's reloaded automatically.
+
+To force reload:
+   POST http://localhost:8000/admin/reload-preferences
+
+
+Editing Preferences:
+--------------------
+
+1. Edit data/preferences.txt (or your chosen file)
+2. Save the file
+3. Next API request will automatically pick up changes
+4. OR call POST /admin/reload-preferences to force reload
+5. Verify with GET /health to see loaded config
+
+
+Example Workflow:
+-----------------
+
+1. Business user wants to boost "eco-friendly" products:
+   
+   Edit preferences.txt:
+   boost.tags=eco-friendly:1.3,sustainable:1.25,recycled:1.2
+   
+   Save → Next search automatically uses new boosts
+
+2. Marketing wants to change chat tone for holiday season:
+   
+   Edit preferences.txt:
+   tone=festive
+   chat_temperature=0.4
+   
+   Save → Next chat uses new tone
+
+3. Need to hide expensive items temporarily:
+   
+   Edit preferences.txt:
+   filters.optional=price<=500
+   
+   Save → All searches now max at $500
+
+
+Advanced Usage:
+---------------
+
+Personalization Triggers:
+Query contains "for mom" → Apply special rules:
+   - Boost items with "armrests", "comfortable"
+   - Boost seat height >= 17"
+   - Prefer non-slippery fabrics
+
+Query contains "for small apartments" → Apply special rules:
+   - Boost compact items
+   - Limit max width
+
+Query contains "for pets" → Apply special rules:
+   - Boost stain-resistant
+   - Boost washable materials
+
+These are automatically detected from natural language preferences.
+
+
+Debugging:
+----------
+
+1. Check preferences loaded:
+   GET /health
+   Look at "preferences" section
+
+2. Check boosting working:
+   Search for same query twice:
+   - Once with tag that has boost
+   - Once without
+   Compare scores
+
+3. Check filters applied:
+   Search with high budget
+   Edit preferences to lower max price
+   Reload preferences
+   Search again → should see fewer expensive items
+
+
+Performance Notes:
+------------------
+- Preferences loaded once at startup
+- Cached in memory (singleton pattern)
+- File modification time checked on each request
+- Only re-parsed if file changed
+- Minimal overhead (<1ms typically)
+
+
+Next Steps:
+-----------
+1. ✅ Local file-based preferences (DONE)
+2. 🔄 Test with your product catalog
+3. 🔄 Fine-tune boost values
+4. 📅 Future: Move to S3 for production
+5. 📅 Future: Add A/B testing variants
+
+
+Common Issues:
+--------------
+
+Q: Changes not applying?
+A: Call POST /admin/reload-preferences or restart server
+
+Q: Boost not working?
+A: Check tag names match exactly (case-sensitive)
+
+Q: Too many/few results?
+A: Adjust 'k' and 'max_results' in preferences
+
+Q: Wrong tone in chat?
+A: Update 'tone' and 'chat_temperature' in preferences
+
+
+Support:
+--------
+- Check search_api.py logs for "✅ Preferences loaded"
+- Check test_preferences_integration.py for examples
+- Modify preferences_parser.py for custom parsing rules
+

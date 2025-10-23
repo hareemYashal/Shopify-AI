@@ -1,0 +1,29 @@
+# Search Configuration
+k=8
+filters.required=in_stock:true
+filters.optional=price<=100
+boost.tags=quick-dry:1.2,women:1.1,running:1.15,athletic:1.1
+tone=concise
+style=bullets
+fallback=I couldn't find that. Try: {suggested_filters}
+
+# Response Formatting
+max_items=5
+include_price=true
+include_availability=true
+include_reason=true
+
+# Search Behavior
+min_similarity_score=0.7
+max_results=10
+enable_filters=true
+enable_suggestions=true
+
+# Chat Settings
+chat_temperature=0.3
+chat_max_tokens=200
+chat_grounding_strict=true
+chat_include_citations=true
+
+
+

@@ -1,0 +1,9 @@
+boto3
+opensearch-py
+python-dotenv
+requests
+numpy
+aws-requests-auth
+fastapi
+uvicorn
+pydantic
