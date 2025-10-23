@@ -6,7 +6,6 @@ Sub-200ms vector search endpoint for Shopify AI Search
 import os
 import json
 import time
-import re
 from typing import Optional, Dict, Any, List
 
 from dotenv import load_dotenv
@@ -15,7 +14,6 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from opensearch import client as opensearch_client
-from preferences_parser import get_preferences
 
 # Load environment variables
 load_dotenv()
@@ -38,11 +36,6 @@ app.add_middleware(
 
 # Initialize Bedrock client
 bedrock = boto3.client('bedrock-runtime', region_name=os.getenv('AWS_REGION', 'us-east-1'))
-
-# Initialize preferences on startup
-print("[INIT] Loading preferences...")
-preferences = get_preferences()
-print(f"[OK] Preferences loaded: k={preferences.get_config()['k']}, max_results={preferences.get_config()['max_results']}")
 
 
 # ================================
@@ -93,45 +86,29 @@ def create_embedding(text: str, model_id: str = 'amazon.titan-embed-text-v1') ->
 
 
 # ================================
-# Search Logic with Preferences Integration
+# Search Logic
 # ================================
-def search_products(query: str) -> tuple[List[Dict[str, Any]], float]:
-    """Search for products using vector similarity with preferences-based ranking"""
+def search_products(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None) -> tuple[List[Dict[str, Any]], float]:
+    """Search for products using vector similarity"""
     query_embedding = create_embedding(query)
     if query_embedding is None:
         return [], 0.0
 
-    # Load preferences
-    prefs = get_preferences()
-    config = prefs.get_config()
-    
-    # Get all settings from preferences
-    k = config.get('max_results', 24)  # Use max_results from preferences
-    default_filters = prefs.get_default_filters()
-    merged_filters = default_filters.copy()
-    
-    # Extract budget constraints from query
-    budget_match = re.search(r'under\s+\$?(\d+)', query.lower())
-    if budget_match:
-        max_price = float(budget_match.group(1))
-        merged_filters['max_price'] = max_price
-
-    # Base KNN search query - fetch more for re-ranking
-    fetch_size = min(k * 3, 100)  # Fetch 3x to allow for re-ranking, max 100
+    # Base KNN search query
     search_body = {
-        "size": fetch_size,
+        "size": k,
         "query": {
             "knn": {
                 "embedding": {
                     "vector": query_embedding,
-                    "k": fetch_size
+                    "k": k
                 }
             }
         }
     }
 
-    # Add filters
-    if merged_filters:
+    # Add filters if provided
+    if filters:
         search_body["query"] = {
             "bool": {
                 "must": [
@@ -139,7 +116,7 @@ def search_products(query: str) -> tuple[List[Dict[str, Any]], float]:
                         "knn": {
                             "embedding": {
                                 "vector": query_embedding,
-                                "k": fetch_size
+                                "k": k
                             }
                         }
                     }
@@ -148,19 +125,15 @@ def search_products(query: str) -> tuple[List[Dict[str, Any]], float]:
             }
         }
 
-        for field, value in merged_filters.items():
-            if field == "in_stock" and value is not None:
-                search_body["query"]["bool"]["filter"].append({"term": {"in_stock": value}})
-            elif field == "category" and value:
-                search_body["query"]["bool"]["filter"].append({"term": {"category": value}})
-            elif field == "max_price" and value is not None:
-                search_body["query"]["bool"]["filter"].append({"range": {"price": {"lte": value}}})
-            elif field == "min_price" and value is not None:
-                search_body["query"]["bool"]["filter"].append({"range": {"price": {"gte": value}}})
-            elif field == "price" and isinstance(value, dict):
-                if "$lte" in value:
+        for field, value in filters.items():
+            if field == "in_stock":
+                search_body["query"]["bool"]["filter"].append({"term": {field: value}})
+            elif field == "category":
+                search_body["query"]["bool"]["filter"].append({"term": {field: value}})
+            elif field == "price":
+                if isinstance(value, dict) and "$lte" in value:
                     search_body["query"]["bool"]["filter"].append({"range": {"price": {"lte": value["$lte"]}}})
-                if "$gte" in value:
+                if isinstance(value, dict) and "$gte" in value:
                     search_body["query"]["bool"]["filter"].append({"range": {"price": {"gte": value["$gte"]}}})
 
     # Execute search
@@ -172,21 +145,6 @@ def search_products(query: str) -> tuple[List[Dict[str, Any]], float]:
         results = []
         for hit in response['hits']['hits']:
             product = hit['_source']
-            base_score = hit['_score']
-            
-            # Apply preference-based boosting
-            boosted_score, boost_reasons = prefs.apply_query_boost(query, product, base_score)
-            
-            # Build reason string
-            reason_parts = []
-            if boost_reasons:
-                reason_parts.extend(boost_reasons)
-            
-            # Add tag matches
-            matching_tags = [tag for tag in product.get('tags', [])[:3]]
-            if matching_tags:
-                reason_parts.append(f"tags: {', '.join(matching_tags)}")
-            
             results.append({
                 "product_id": product["product_id"],
                 "title": product["title"],
@@ -196,17 +154,10 @@ def search_products(query: str) -> tuple[List[Dict[str, Any]], float]:
                 "in_stock": product["in_stock"],
                 "category": product["category"],
                 "tags": product["tags"],
-                "score": base_score,
-                "boosted_score": boosted_score,
-                "reason": f"match: {', '.join(reason_parts)}, ${product['price']}"
+                "score": hit["_score"],
+                "reason": f"match: {', '.join(product['tags'][:3])}, price: ${product['price']}"
             })
 
-        # Sort by boosted score
-        results.sort(key=lambda x: x['boosted_score'], reverse=True)
-        
-        # Return top k results
-        results = results[:k]
-        
         return results, search_time
 
     except Exception as e:
@@ -256,56 +207,35 @@ def format_products_for_llm(results: List[Dict[str, Any]], max_products: int = 5
 
 
 # ================================
-# LLM Chat Generation with Preferences
+# LLM Chat Generation
 # ================================
 def generate_chat_response(user_message: str, search_results: List[Dict[str, Any]], search_time: float) -> Dict[str, Any]:
-    """Generate conversational response using Bedrock LLM with preferences-based tone"""
-    # Load preferences
-    prefs = get_preferences()
-    chat_config = prefs.get_chat_config()
-    response_config = prefs.get_response_config()
-    business_context = prefs.format_business_rules_for_llm()
-    
+    """Generate conversational response using Bedrock LLM"""
     products_text = format_products_for_llm(search_results)
 
-    # Build prompt with preferences
-    tone = response_config.get('tone', 'friendly')
-    include_price = response_config.get('include_price', True)
-    include_availability = response_config.get('include_availability', True)
-    
     prompt = f"""
-You are a helpful shopping assistant for CoralBricks.ai. Based on the following products, provide a natural, conversational response to the user's query.
+You are a helpful shopping assistant. Based on the following products, provide a natural, conversational response to the user's query.
 
 User Query: "{user_message}"
 
 Available Products:
 {products_text}
 
-{business_context}
-
 Instructions:
-1. Tone: Be {tone}, concise, and matter-of-fact.
-2. Always mention product names{"and prices" if include_price else ""} when relevant.
-3. {"Always include stock availability information." if include_availability else ""}
-4. Use Product IDs when referring to products for citation.
-5. Explain why each product matches the customer's request.
-6. NEVER invent specifications or details not provided in the product information.
-7. If unsure about any detail, say "I don't have that detail" and provide the product link.
-8. If no products match perfectly, show closest alternatives and explain the difference.
-9. Keep the response helpful and informative without being pushy.
+1. Provide a helpful, conversational response about the products.
+2. Mention specific product names and prices when relevant.
+3. Use Product IDs when referring to products.
+4. If no products match, suggest alternatives or ask for clarification.
+5. Keep the response concise but informative.
 """
 
     try:
-        # Get temperature from preferences
-        temperature = chat_config.get('temperature', 0.3)
-        max_tokens = chat_config.get('max_tokens', 300)
-        
         response = bedrock.invoke_model(
             modelId='mistral.mistral-small-2402-v1:0',
             body=json.dumps({
                 "prompt": prompt,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
+                "max_tokens": 300,
+                "temperature": 0.3,
                 "top_p": 0.9
             })
         )
@@ -313,12 +243,10 @@ Instructions:
         result = json.loads(response['body'].read())
         ai_response = result['outputs'][0]['text'].strip()
 
-        # Extract cited product IDs
         cited_items = []
         for product in search_results:
-            product_id_str = str(product['product_id'])
-            if product_id_str in ai_response or product['title'] in ai_response:
-                cited_items.append(product_id_str)
+            if str(product['product_id']) in ai_response:
+                cited_items.append(product['product_id'])
 
         return {
             "answer": ai_response,
@@ -329,7 +257,7 @@ Instructions:
     except Exception as e:
         print(f"❌ Error generating chat response: {e}")
         return {
-            "answer": "I'm having trouble processing your request right now. Please try again later.",
+            "answer": "I’m having trouble processing your request right now. Please try again later.",
             "items_cited": [],
             "reasoning": f"Error occurred while generating response: {str(e)}"
         }
@@ -354,7 +282,11 @@ async def search_fast(request: SearchRequest):
         if len(request.query) > 500:
             raise HTTPException(status_code=400, detail="Query too long (max 500 characters)")
 
-        results, search_time = search_products(query=request.query)
+        results, search_time = search_products(
+            query=request.query,
+            k=24,
+            filters=None
+        )
 
         suggested_filters = generate_suggested_filters(results)
 
@@ -394,8 +326,12 @@ async def chat(request: ChatRequest):
         if len(request.message) > 1000:
             raise HTTPException(status_code=400, detail="Message too long (max 1000 characters)")
 
-        # Perform search (uses preferences for all settings)
-        search_results, search_time = search_products(query=request.message)
+        # Perform search (defaults to top 5 in-stock products)
+        search_results, search_time = search_products(
+            query=request.message,
+            k=5,
+            filters={"in_stock": True}
+        )
 
         chat_response = generate_chat_response(
             user_message=request.message,
@@ -432,44 +368,12 @@ async def health_check():
     except Exception as e:
         bedrock_status = f"unhealthy: {str(e)}"
 
-    # Check preferences
-    prefs = get_preferences()
-    prefs_config = prefs.get_config()
-
     return {
         "status": "healthy",
         "opensearch": opensearch_status,
         "bedrock": bedrock_status,
-        "preferences": {
-            "loaded": True,
-            "k": prefs_config.get('k'),
-            "max_results": prefs_config.get('max_results'),
-            "tone": prefs_config.get('response', {}).get('tone')
-        },
         "timestamp": time.time()
     }
-
-
-@app.post("/admin/reload-preferences")
-async def reload_preferences_endpoint():
-    """Reload preferences from file (admin endpoint)"""
-    try:
-        from preferences_parser import reload_preferences
-        prefs = reload_preferences()
-        config = prefs.get_config()
-        
-        return {
-            "status": "success",
-            "message": "Preferences reloaded successfully",
-            "config": {
-                "k": config.get('k'),
-                "max_results": config.get('max_results'),
-                "default_filters": config.get('default_filters'),
-                "tone": config.get('response', {}).get('tone')
-            }
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to reload preferences: {str(e)}")
 
 
 if __name__ == "__main__":
