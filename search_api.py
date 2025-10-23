@@ -1,8 +1,3 @@
-"""
-FastAPI endpoint for /search-fast
-Sub-200ms vector search endpoint for Shopify AI Search
-"""
-
 import os
 import json
 import time
