@@ -279,7 +279,7 @@ async def search_fast(request: SearchRequest):
 
         results, search_time = search_products(
             query=request.query,
-            k=24,
+            k=5,
             filters=None
         )
 
