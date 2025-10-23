@@ -15,7 +15,7 @@ include_reason=true
 
 # Search Behavior
 min_similarity_score=0.7
-max_results=10
+max_results=24
 enable_filters=true
 enable_suggestions=true
 

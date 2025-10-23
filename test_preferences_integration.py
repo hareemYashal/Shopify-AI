@@ -53,7 +53,7 @@ def test_search_with_budget(query: str, expected_max_price: float):
     
     response = requests.post(
         f"{BASE_URL}/search-fast",
-        json={"query": query, "k": 5}
+        json={"query": query}
     )
     
     if response.status_code == 200:
@@ -90,7 +90,7 @@ def test_search_with_tags():
     
     response = requests.post(
         f"{BASE_URL}/search-fast",
-        json={"query": "quick-dry running shorts", "k": 5}
+        json={"query": "quick-dry running shorts"}
     )
     
     if response.status_code == 200:
@@ -122,7 +122,7 @@ def test_in_stock_filter():
     
     response = requests.post(
         f"{BASE_URL}/search-fast",
-        json={"query": "running shoes", "k": 10}
+        json={"query": "running shoes"}
     )
     
     if response.status_code == 200:
@@ -192,7 +192,7 @@ def test_color_matching():
     
     response = requests.post(
         f"{BASE_URL}/search-fast",
-        json={"query": "black shorts", "k": 5}
+        json={"query": "black shorts"}
     )
     
     if response.status_code == 200:

@@ -50,8 +50,6 @@ print(f"[OK] Preferences loaded: k={preferences.get_config()['k']}, max_results=
 # ================================
 class SearchRequest(BaseModel):
     query: str
-    filters: Optional[Dict[str, Any]] = None
-    k: Optional[int] = Query(default=5, ge=1, le=20)
 
 
 class SearchResponse(BaseModel):
@@ -97,7 +95,7 @@ def create_embedding(text: str, model_id: str = 'amazon.titan-embed-text-v1') ->
 # ================================
 # Search Logic with Preferences Integration
 # ================================
-def search_products(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None) -> tuple[List[Dict[str, Any]], float]:
+def search_products(query: str) -> tuple[List[Dict[str, Any]], float]:
     """Search for products using vector similarity with preferences-based ranking"""
     query_embedding = create_embedding(query)
     if query_embedding is None:
@@ -107,15 +105,10 @@ def search_products(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = 
     prefs = get_preferences()
     config = prefs.get_config()
     
-    # Merge default filters with provided filters
+    # Get all settings from preferences
+    k = config.get('max_results', 24)  # Use max_results from preferences
     default_filters = prefs.get_default_filters()
     merged_filters = default_filters.copy()
-    if filters:
-        merged_filters.update(filters)
-    
-    # Use preferences for k if not explicitly provided
-    if k == 5:  # Default value
-        k = config.get('k', 8)
     
     # Extract budget constraints from query
     budget_match = re.search(r'under\s+\$?(\d+)', query.lower())
@@ -124,7 +117,7 @@ def search_products(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = 
         merged_filters['max_price'] = max_price
 
     # Base KNN search query - fetch more for re-ranking
-    fetch_size = k * 3  # Fetch 3x to allow for re-ranking
+    fetch_size = min(k * 3, 100)  # Fetch 3x to allow for re-ranking, max 100
     search_body = {
         "size": fetch_size,
         "query": {
@@ -361,11 +354,7 @@ async def search_fast(request: SearchRequest):
         if len(request.query) > 500:
             raise HTTPException(status_code=400, detail="Query too long (max 500 characters)")
 
-        results, search_time = search_products(
-            query=request.query,
-            k=request.k,
-            filters=request.filters
-        )
+        results, search_time = search_products(query=request.query)
 
         suggested_filters = generate_suggested_filters(results)
 
@@ -388,27 +377,10 @@ async def search_fast(request: SearchRequest):
 
 @app.get("/search-fast", response_model=SearchResponse)
 async def search_fast_get(
-    query: str = Query(..., description="Search query"),
-    k: int = Query(default=5, ge=1, le=20, description="Number of results"),
-    in_stock: Optional[bool] = Query(default=None, description="Filter by stock status"),
-    category: Optional[str] = Query(default=None, description="Filter by category"),
-    price_max: Optional[float] = Query(default=None, description="Maximum price"),
-    price_min: Optional[float] = Query(default=None, description="Minimum price"),
+    query: str = Query(..., description="Search query")
 ):
     """GET version of search-fast endpoint for easier testing"""
-    filters = {}
-    if in_stock is not None:
-        filters["in_stock"] = in_stock
-    if category:
-        filters["category"] = category
-    if price_max is not None or price_min is not None:
-        filters["price"] = {}
-        if price_max is not None:
-            filters["price"]["$lte"] = price_max
-        if price_min is not None:
-            filters["price"]["$gte"] = price_min
-
-    request = SearchRequest(query=query, filters=filters if filters else None, k=k)
+    request = SearchRequest(query=query)
     return await search_fast(request)
 
 
@@ -422,12 +394,8 @@ async def chat(request: ChatRequest):
         if len(request.message) > 1000:
             raise HTTPException(status_code=400, detail="Message too long (max 1000 characters)")
 
-        # Perform search (defaults to top 5 in-stock products)
-        search_results, search_time = search_products(
-            query=request.message,
-            k=5,
-            filters={"in_stock": True}
-        )
+        # Perform search (uses preferences for all settings)
+        search_results, search_time = search_products(query=request.message)
 
         chat_response = generate_chat_response(
             user_message=request.message,
