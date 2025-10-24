@@ -23,11 +23,11 @@ if __name__ == "__main__":
     
     if stats["total_products"] == 0:
         print("\n📥 No products found, embedding products...")
-        embed_products_to_chroma()
+        embed_products_to_chroma(incremental=False)  # Full embedding for empty collection
     else:
         print(f"\n✅ Found {stats['total_products']} products in ChromaDB")
-        print("🔄 Re-embedding products...")
-        embed_products_to_chroma()
+        print("🔄 Running incremental update (only new products)...")
+        embed_products_to_chroma(incremental=True)  # Incremental embedding
     
     # Test performance
     print("\n🧪 Testing performance...")

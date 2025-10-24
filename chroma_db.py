@@ -64,13 +64,17 @@ def build_text_for_embedding(product: Dict[str, Any]) -> str:
     
     return " ".join(text_parts)
 
-def embed_products_to_chroma(catalog_file: str = 'data/catalog.jsonl'):
-    """Embed all products from catalog.jsonl to ChromaDB"""
+def embed_products_to_chroma(catalog_file: str = 'data/catalog.jsonl', incremental: bool = True):
+    """Embed products from catalog.jsonl to ChromaDB (incremental by default)"""
     print("🔄 Starting ChromaDB embedding process...")
     
     # Check if collection already has data
     current_count = collection.count()
-    if current_count > 0:
+    if current_count > 0 and incremental:
+        print(f"📊 Collection already has {current_count} products")
+        print("🔄 Running incremental update (only new products)...")
+        return embed_products_incremental(catalog_file)
+    elif current_count > 0 and not incremental:
         print(f"📊 Collection already has {current_count} products")
         user_input = input("Do you want to clear and re-embed? (y/N): ").strip().lower()
         if user_input == 'y':
@@ -80,7 +84,7 @@ def embed_products_to_chroma(catalog_file: str = 'data/catalog.jsonl'):
             print("✅ Keeping existing data")
             return
     else:
-        print("📊 Collection is empty, proceeding with embedding...")
+        print("📊 Collection is empty, proceeding with full embedding...")
     
     # Load products
     products = []
@@ -136,6 +140,87 @@ def embed_products_to_chroma(catalog_file: str = 'data/catalog.jsonl'):
         print(f"✅ Successfully added {len(ids)} products to ChromaDB")
     else:
         print("❌ No products to add to ChromaDB")
+
+def embed_products_incremental(catalog_file: str = 'data/catalog.jsonl'):
+    """Incrementally embed only new products to ChromaDB"""
+    print("🔄 Starting incremental embedding process...")
+    
+    # Get existing product IDs
+    try:
+        existing_data = collection.get()
+        existing_ids = set(existing_data['ids']) if existing_data['ids'] else set()
+        print(f"📊 Found {len(existing_ids)} existing products")
+    except Exception as e:
+        print(f"❌ Error getting existing products: {e}")
+        existing_ids = set()
+    
+    # Load all products from catalog
+    all_products = []
+    with open(catalog_file, 'r', encoding='utf-8') as f:
+        for line_num, line in enumerate(f, 1):
+            try:
+                product = json.loads(line.strip())
+                all_products.append(product)
+            except json.JSONDecodeError as e:
+                print(f"❌ Error parsing line {line_num}: {e}")
+                continue
+    
+    print(f"📊 Loaded {len(all_products)} products from catalog")
+    
+    # Find new products (not in existing collection)
+    new_products = []
+    for product in all_products:
+        product_id = str(product['product_id'])
+        if product_id not in existing_ids:
+            new_products.append(product)
+    
+    print(f"🆕 Found {len(new_products)} new products to embed")
+    
+    if not new_products:
+        print("✅ No new products to embed")
+        return
+    
+    # Prepare data for new products
+    ids = []
+    embeddings = []
+    metadatas = []
+    
+    for i, product in enumerate(new_products):
+        print(f"🔄 Processing new product {i+1}/{len(new_products)}: {product['title']}")
+        
+        # Build text for embedding
+        text_for_embedding = build_text_for_embedding(product)
+        
+        # Generate embedding
+        embedding = create_embedding(text_for_embedding)
+        if embedding is None:
+            print(f"❌ Failed to generate embedding for {product['product_id']}")
+            continue
+        
+        # Prepare data
+        ids.append(str(product['product_id']))
+        embeddings.append(embedding)
+        metadatas.append({
+            'title': product['title'],
+            'price': product['price'],
+            'url': product['url'],
+            'image': product['image'],
+            'in_stock': product['in_stock'],
+            'category': product['category'],
+            'tags': ', '.join(product['tags'])  # Convert list to string
+        })
+    
+    # Add new products to ChromaDB
+    if ids:
+        collection.add(
+            ids=ids,
+            embeddings=embeddings,
+            metadatas=metadatas
+        )
+        print(f"✅ Successfully added {len(ids)} new products to ChromaDB")
+        print(f"📊 Total products in collection: {collection.count()}")
+    else:
+        print("❌ No new products to add to ChromaDB")
 
 def search_products_chroma(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None) -> tuple[List[Dict[str, Any]], float]:
     """Search products using ChromaDB for maximum speed"""

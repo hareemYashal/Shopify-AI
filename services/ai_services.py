@@ -189,20 +189,27 @@ Instructions:
         ai_response = result['outputs'][0]['text'].strip()
 
         cited_items = []
+        product_links = []
         for product in search_results:
             if str(product['product_id']) in ai_response:
                 cited_items.append(product['product_id'])
+                product_links.append({
+                    "product_id": product['product_id'],
+                    "url": product['url']
+                })
 
         return {
             "answer": ai_response,
             "items_cited": cited_items,
+            "product_links": product_links,
             "reasoning": f"Found {len(search_results)} products matching your query in {search_time:.2f}ms"
         }
 
     except Exception as e:
         print(f"❌ Error generating chat response: {e}")
         return {
-            "answer": "I’m having trouble processing your request right now. Please try again later.",
+            "answer": "I'm having trouble processing your request right now. Please try again later.",
             "items_cited": [],
+            "product_links": [],
             "reasoning": f"Error occurred while generating response: {str(e)}"
         }

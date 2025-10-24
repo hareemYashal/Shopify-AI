@@ -27,6 +27,7 @@ class ChatResponse(BaseModel):
     items_cited: List[str]
     search_time_ms: float
     reasoning: str
+    product_links: List[Dict[str, str]]  # List of {product_id, url} dictionaries
 
 
 class ErrorResponse(BaseModel):

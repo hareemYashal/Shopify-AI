@@ -154,7 +154,8 @@ async def chat(request: ChatRequest):
             answer=chat_response["answer"],
             items_cited=chat_response["items_cited"],
             search_time_ms=search_time,
-            reasoning=chat_response["reasoning"]
+            reasoning=chat_response["reasoning"],
+            product_links=chat_response["product_links"]
         )
 
     except HTTPException:
