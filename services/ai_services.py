@@ -167,6 +167,7 @@ Available Products:
 {products_text}
 
 Instructions:
+- If the user's query asks for product description(s) (e.g., "describe", "what is it", "tell me about"), return a concise description for the most relevant products using only available fields (title, category, tags). Do not invent specifications that are not provided.
 1. Provide a helpful, conversational response about the products.
 2. Mention specific product names and prices when relevant.
 3. Use Product IDs when referring to products.
