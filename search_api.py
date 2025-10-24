@@ -79,7 +79,7 @@ async def search_fast(request: SearchRequest):
         # Perform search with extracted filters
         results, search_time = search_products_chroma(
             query=cleaned_query,
-            k=5,
+            k=request.k,
             filters=parsed_filters
         )
 
@@ -106,10 +106,11 @@ async def search_fast(request: SearchRequest):
 
 @app.get("/search-fast", response_model=SearchResponse)
 async def search_fast_get(
-    query: str = Query(..., description="Search query")
+    query: str = Query(..., description="Search query"),
+    k: int = Query(5, description="Number of results to return")
 ):
     """GET version of search-fast endpoint for easier testing"""
-    request = SearchRequest(query=query)
+    request = SearchRequest(query=query, k=k)
     return await search_fast(request)
 
 
