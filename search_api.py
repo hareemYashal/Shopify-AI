@@ -107,7 +107,7 @@ async def search_fast(request: SearchRequest):
 @app.get("/search-fast", response_model=SearchResponse)
 async def search_fast_get(
     query: str = Query(..., description="Search query"),
-    k: int = Query(5, description="Number of results to return")
+    k: int = Query(20, description="Number of results to return")
 ):
     """GET version of search-fast endpoint for easier testing"""
     request = SearchRequest(query=query, k=k)

@@ -9,7 +9,7 @@ from pydantic import BaseModel
 # ================================
 class SearchRequest(BaseModel):
     query: str
-    k: Optional[int] = 5
+    k: Optional[int] = 20
 
 
 class SearchResponse(BaseModel):
