@@ -7,3 +7,4 @@ aws-requests-auth
 fastapi
 uvicorn
 pydantic
+chromadb>=0.4.0
