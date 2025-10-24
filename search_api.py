@@ -141,7 +141,7 @@ async def chat(request: ChatRequest):
         # Perform search with extracted filters
         search_results, search_time = search_products_chroma(
             query=cleaned_query,
-            k=5,
+            k=24,
             filters=parsed_filters
         )
 
