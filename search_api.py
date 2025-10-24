@@ -10,10 +10,11 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from config.opensearch import client as opensearch_client
-from utils.util_funcs import parse_filters, convert_filters_to_opensearch, clean_query_for_embedding
+from utils.util_funcs import parse_filters, clean_query_for_embedding
 from models.models import SearchRequest, SearchResponse, ChatRequest, ChatResponse, ErrorResponse
 
-from services.ai_services import search_products, generate_suggested_filters, generate_chat_response, create_embedding
+from services.ai_services import generate_suggested_filters, generate_chat_response
+from chroma_db import search_products_chroma, get_collection_stats
 
 
 # Load environment variables
@@ -21,9 +22,9 @@ load_dotenv()
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="Shopify AI Search API",
-    description="AI-powered product search with vector similarity",
-    version="1.0.0"
+    title="Shopify AI Search API (ChromaDB)",
+    description="AI-powered product search with ultra-fast ChromaDB vector similarity",
+    version="2.0.0"
 )
 
 # Add CORS middleware for Shopify integration
@@ -61,7 +62,7 @@ async def search_fast(request: SearchRequest):
 
         # Extract filters from natural language query
         parsed_filters = parse_filters(request.query)
-        opensearch_filters = convert_filters_to_opensearch(parsed_filters)
+        # Use parsed filters directly for ChromaDB
         
         # Clean query for better embedding (remove filter terms)
         cleaned_query = clean_query_for_embedding(request.query)
@@ -71,15 +72,15 @@ async def search_fast(request: SearchRequest):
             cleaned_query = request.query
         
         # Log filter extraction for debugging
-        if opensearch_filters:
-            print(f"🔍 Extracted filters: {opensearch_filters}")
+        if parsed_filters:
+            print(f"🔍 Extracted filters: {parsed_filters}")
             print(f"📝 Cleaned query: '{cleaned_query}' (original: '{request.query}')")
 
         # Perform search with extracted filters
-        results, search_time = search_products(
+        results, search_time = search_products_chroma(
             query=cleaned_query,
             k=5,
-            filters=opensearch_filters
+            filters=parsed_filters
         )
 
         suggested_filters = generate_suggested_filters(results)
@@ -124,7 +125,7 @@ async def chat(request: ChatRequest):
 
         # Extract filters from natural language query
         parsed_filters = parse_filters(request.message)
-        opensearch_filters = convert_filters_to_opensearch(parsed_filters)
+        # Use parsed filters directly for ChromaDB
         
         # Clean query for better embedding
         cleaned_query = clean_query_for_embedding(request.message)
@@ -132,15 +133,15 @@ async def chat(request: ChatRequest):
             cleaned_query = request.message
         
         # Log filter extraction for debugging
-        if opensearch_filters:
-            print(f"💬 Chat filters: {opensearch_filters}")
+        if parsed_filters:
+            print(f"💬 Chat filters: {parsed_filters}")
             print(f"💬 Chat query: '{cleaned_query}' (original: '{request.message}')")
 
         # Perform search with extracted filters
-        search_results, search_time = search_products(
+        search_results, search_time = search_products_chroma(
             query=cleaned_query,
             k=5,
-            filters=opensearch_filters
+            filters=parsed_filters
         )
 
         chat_response = generate_chat_response(
@@ -167,10 +168,11 @@ async def chat(request: ChatRequest):
 async def health_check():
     """Health check endpoint"""
     try:
-        info = opensearch_client.info()
-        opensearch_status = "healthy"
+        chroma_stats = get_collection_stats()
+        chroma_status = "healthy" if chroma_stats["status"] == "healthy" else f"unhealthy: {chroma_stats.get('error', 'Unknown error')}"
     except Exception as e:
-        opensearch_status = f"unhealthy: {str(e)}"
+        chroma_status = f"unhealthy: {str(e)}"
+        chroma_stats = {"total_products": 0}
 
     try:
         bedrock.list_foundation_models()
@@ -179,8 +181,9 @@ async def health_check():
         bedrock_status = f"unhealthy: {str(e)}"
 
     return {
-        "status": "healthy",
-        "opensearch": opensearch_status,
+        "status": "healthy" if chroma_status == "healthy" and bedrock_status == "healthy" else "unhealthy",
+        "chromadb": chroma_status,
+        "chromadb_stats": chroma_stats,
         "bedrock": bedrock_status,
         "timestamp": time.time()
     }

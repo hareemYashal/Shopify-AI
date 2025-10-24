@@ -43,7 +43,7 @@ def parse_filters(query: str) -> Dict[str, Any]:
     # - out of stock, sold out, unavailable
     # - show only available, hide sold out, etc.
 
-    if re.search(r'(out of stock|sold out|unavailable)', query_lower):
+    if re.search(r'(out of stock|sold out|unavailable|not available)', query_lower):
         filters['in_stock'] = {'eq': False}
     elif re.search(r'(in stock|available|show available|only available|still available)', query_lower):
         filters['in_stock'] = {'eq': True}
