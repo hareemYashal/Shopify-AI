@@ -9,7 +9,8 @@ import time
 import os
 from dotenv import load_dotenv
 import boto3
-from opensearch import client as opensearch_client
+from config.opensearch import client as opensearch_client
+
 
 # Load environment variables
 load_dotenv()
