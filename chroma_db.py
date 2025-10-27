@@ -7,7 +7,9 @@ Provides 90%+ faster search compared to OpenSearch
 import os
 import json
 import time
+import random
 from typing import Optional, Dict, Any, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 import boto3
 
@@ -30,18 +32,29 @@ collection = client.get_or_create_collection(
     metadata={"hnsw:space": "cosine"}
 )
 
-def create_embedding(text: str, model_id: str = 'amazon.titan-embed-text-v1') -> Optional[List[float]]:
-    """Generate embedding for text using Amazon Bedrock"""
-    try:
-        response = bedrock.invoke_model(
-            modelId=model_id,
-            body=json.dumps({"inputText": text})
-        )
-        result = json.loads(response['body'].read())
-        return result['embedding']
-    except Exception as e:
-        print(f"❌ Error creating embedding: {e}")
-        return None
+def create_embedding(text: str, model_id: str = 'amazon.titan-embed-text-v1', max_retries: int = 3) -> Optional[List[float]]:
+    """Generate embedding for text using Amazon Bedrock with retry logic"""
+    for attempt in range(max_retries):
+        try:
+            # Add small random delay to avoid rate limiting
+            time.sleep(0.05 + random.uniform(0, 0.05))
+            
+            response = bedrock.invoke_model(
+                modelId=model_id,
+                body=json.dumps({"inputText": text})
+            )
+            result = json.loads(response['body'].read())
+            return result['embedding']
+        except Exception as e:
+            if attempt < max_retries - 1:
+                # Exponential backoff: 1s, 2s, 4s
+                wait_time = (2 ** attempt) + random.uniform(0, 1)
+                print(f"⚠️  Retry {attempt + 1}/{max_retries} after {wait_time:.1f}s...")
+                time.sleep(wait_time)
+            else:
+                print(f"❌ Error creating embedding after {max_retries} attempts: {e}")
+                return None
+    return None
 
 def build_text_for_embedding(product: Dict[str, Any]) -> str:
     """Build text for embedding from product data"""
@@ -58,6 +71,36 @@ def build_text_for_embedding(product: Dict[str, Any]) -> str:
         text_parts.append(f"Tags: {tags_text}")
     
     return " ".join(text_parts)
+
+def process_single_product_for_embedding(product: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Process a single product: generate embedding and return data for ChromaDB"""
+    try:
+        # Build text for embedding
+        text_for_embedding = build_text_for_embedding(product)
+        
+        # Generate embedding
+        embedding = create_embedding(text_for_embedding)
+        if embedding is None:
+            print(f"❌ Failed to generate embedding for {product['product_id']}")
+            return None
+        
+        # Return data ready for ChromaDB
+        return {
+            'id': str(product['product_id']),
+            'embedding': embedding,
+            'metadata': {
+                'title': product['title'],
+                'price': product['price'],
+                'url': product['url'],
+                'image': product['image'],
+                'in_stock': product['in_stock'],
+                'category': product['category'],
+                'tags': ', '.join(product['tags']) if isinstance(product['tags'], list) else product['tags']
+            }
+        }
+    except Exception as e:
+        print(f"❌ Error processing {product.get('product_id', 'unknown')}: {e}")
+        return None
 
 def embed_products_to_chroma(catalog_file: str = 'data/catalog.jsonl', incremental: bool = True):
     """Embed products from catalog.jsonl to ChromaDB (incremental by default)"""
@@ -94,47 +137,71 @@ def embed_products_to_chroma(catalog_file: str = 'data/catalog.jsonl', increment
     
     print(f"📊 Loaded {len(products)} products from catalog")
     
-    # Prepare data for ChromaDB
-    ids = []
-    embeddings = []
-    metadatas = []
+    # Batch size to avoid ChromaDB limits (max batch size is ~5000)
+    BATCH_SIZE = 1000
+    total_added = 0
+    MAX_WORKERS = 7  # Parallel workers (reduced to avoid throttling)
     
-    for i, product in enumerate(products):
-        print(f"🔄 Processing {i+1}/{len(products)}: {product['title']}")
-        
-        # Build text for embedding
-        text_for_embedding = build_text_for_embedding(product)
-        print(f"   📝 Embedding text: {text_for_embedding[:100]}...")
-        
-        # Generate embedding
-        embedding = create_embedding(text_for_embedding)
-        if embedding is None:
-            print(f"❌ Failed to generate embedding for {product['product_id']}")
-            continue
-        
-        # Prepare data
-        ids.append(str(product['product_id']))
-        embeddings.append(embedding)
-        metadatas.append({
-            'title': product['title'],
-            'price': product['price'],
-            'url': product['url'],
-            'image': product['image'],
-            'in_stock': product['in_stock'],
-            'category': product['category'],
-            'tags': ', '.join(product['tags'])  # Convert list to string
-        })
+    print(f"⚡ Using {MAX_WORKERS} parallel workers for embeddings")
     
-    # Add to ChromaDB
-    if ids:
-        collection.add(
-            ids=ids,
-            embeddings=embeddings,
-            metadatas=metadatas
-        )
-        print(f"✅ Successfully added {len(ids)} products to ChromaDB")
-    else:
-        print("❌ No products to add to ChromaDB")
+    for batch_start in range(0, len(products), BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, len(products))
+        batch = products[batch_start:batch_end]
+        
+        print(f"\n📦 Processing batch {batch_start//BATCH_SIZE + 1} (items {batch_start+1}-{batch_end})")
+        
+        # Process products in parallel using ThreadPoolExecutor
+        ids = []
+        embeddings = []
+        metadatas = []
+        
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # Submit all tasks
+            future_to_index = {executor.submit(process_single_product_for_embedding, product): i 
+                             for i, product in enumerate(batch)}
+            
+            # Collect results as they complete
+            results = {}
+            completed = 0
+            for future in as_completed(future_to_index):
+                completed += 1
+                index = future_to_index[future]
+                
+                try:
+                    result = future.result()
+                    if result is not None:
+                        results[index] = result
+                    
+                    # Progress update every 100 items
+                    if completed % 100 == 0 or completed == len(batch):
+                        print(f"   ⚡ Processed {completed}/{len(batch)} embeddings...")
+                except Exception as e:
+                    print(f"❌ Error processing product: {e}")
+        
+        # Sort by index to maintain order
+        sorted_results = [results[i] for i in sorted(results.keys())]
+        
+        for result in sorted_results:
+            ids.append(result['id'])
+            embeddings.append(result['embedding'])
+            metadatas.append(result['metadata'])
+        
+        # Add batch to ChromaDB
+        if ids:
+            try:
+                collection.add(
+                    ids=ids,
+                    embeddings=embeddings,
+                    metadatas=metadatas
+                )
+                total_added += len(ids)
+                print(f"✅ Successfully added {len(ids)} products to ChromaDB (Total: {total_added}/{len(products)})")
+            except Exception as e:
+                print(f"❌ Error adding batch: {e}")
+                print(f"⚠️  Partial progress: {total_added} products added so far")
+                raise
+    
+    print(f"\n🎉 Successfully added {total_added} products to ChromaDB")
 
 def embed_products_incremental(catalog_file: str = 'data/catalog.jsonl'):
     """Incrementally embed only new products to ChromaDB"""
@@ -175,47 +242,72 @@ def embed_products_incremental(catalog_file: str = 'data/catalog.jsonl'):
         print("✅ No new products to embed")
         return
     
-    # Prepare data for new products
-    ids = []
-    embeddings = []
-    metadatas = []
+    # Batch size to avoid ChromaDB limits
+    BATCH_SIZE = 1000
+    total_added = 0
+    MAX_WORKERS = 7  # Parallel workers (reduced to avoid throttling)
     
-    for i, product in enumerate(new_products):
-        print(f"🔄 Processing new product {i+1}/{len(new_products)}: {product['title']}")
-        
-        # Build text for embedding
-        text_for_embedding = build_text_for_embedding(product)
-        
-        # Generate embedding
-        embedding = create_embedding(text_for_embedding)
-        if embedding is None:
-            print(f"❌ Failed to generate embedding for {product['product_id']}")
-            continue
-        
-        # Prepare data
-        ids.append(str(product['product_id']))
-        embeddings.append(embedding)
-        metadatas.append({
-            'title': product['title'],
-            'price': product['price'],
-            'url': product['url'],
-            'image': product['image'],
-            'in_stock': product['in_stock'],
-            'category': product['category'],
-            'tags': ', '.join(product['tags'])  # Convert list to string
-        })
+    print(f"⚡ Using {MAX_WORKERS} parallel workers for embeddings")
     
-    # Add new products to ChromaDB
-    if ids:
-        collection.add(
-            ids=ids,
-            embeddings=embeddings,
-            metadatas=metadatas
-        )
-        print(f"✅ Successfully added {len(ids)} new products to ChromaDB")
-        print(f"📊 Total products in collection: {collection.count()}")
-    else:
-        print("❌ No new products to add to ChromaDB")
+    for batch_start in range(0, len(new_products), BATCH_SIZE):
+        batch_end = min(batch_start + BATCH_SIZE, len(new_products))
+        batch = new_products[batch_start:batch_end]
+        
+        print(f"\n📦 Processing batch {batch_start//BATCH_SIZE + 1} (items {batch_start+1}-{batch_end})")
+        
+        # Process products in parallel using ThreadPoolExecutor
+        ids = []
+        embeddings = []
+        metadatas = []
+        
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # Submit all tasks
+            future_to_index = {executor.submit(process_single_product_for_embedding, product): i 
+                             for i, product in enumerate(batch)}
+            
+            # Collect results as they complete
+            results = {}
+            completed = 0
+            for future in as_completed(future_to_index):
+                completed += 1
+                index = future_to_index[future]
+                
+                try:
+                    result = future.result()
+                    if result is not None:
+                        results[index] = result
+                    
+                    # Progress update every 100 items
+                    if completed % 100 == 0 or completed == len(batch):
+                        print(f"   ⚡ Processed {completed}/{len(batch)} embeddings...")
+                except Exception as e:
+                    print(f"❌ Error processing product: {e}")
+        
+        # Sort by index to maintain order
+        sorted_results = [results[i] for i in sorted(results.keys())]
+        
+        for result in sorted_results:
+            ids.append(result['id'])
+            embeddings.append(result['embedding'])
+            metadatas.append(result['metadata'])
+        
+        # Add batch to ChromaDB
+        if ids:
+            try:
+                collection.add(
+                    ids=ids,
+                    embeddings=embeddings,
+                    metadatas=metadatas
+                )
+                total_added += len(ids)
+                print(f"✅ Successfully added {len(ids)} products to ChromaDB (Total: {total_added}/{len(new_products)})")
+            except Exception as e:
+                print(f"❌ Error adding batch: {e}")
+                print(f"⚠️  Partial progress: {total_added} products added so far")
+                raise
+    
+    print(f"\n🎉 Successfully added {total_added} new products to ChromaDB")
+    print(f"📊 Total products in collection: {collection.count()}")
 
 def search_products_chroma(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None, collection_name: str = "products") -> tuple[List[Dict[str, Any]], float]:
     """Search products using ChromaDB for maximum speed

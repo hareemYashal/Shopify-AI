@@ -17,13 +17,13 @@ from config.bedrock import client as bedrock
 # Preferences Loading
 # ================================
 def load_store_preferences() -> str:
-    """Load store preferences from preferences.txt file"""
+    """Load store preferences from sys_prompt.txt file"""
     try:
-        preferences_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'preferences.txt')
+        preferences_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'sys_prompt.txt')
         with open(preferences_path, 'r', encoding='utf-8') as f:
             return f.read().strip()
     except Exception as e:
-        print(f"❌ Error loading preferences: {e}")
+        print(f"❌ Error loading system prompt: {e}")
         return "Store preferences not available."
 
 
