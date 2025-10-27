@@ -9,7 +9,8 @@ from pydantic import BaseModel
 # ================================
 class SearchRequest(BaseModel):
     query: str
-    k: Optional[int] = 24
+    collection_name: Optional[str] = "products"  # Optional collection name, defaults to "products"
+    k: Optional[int] = 24  # Number of results to return, defaults to 24
 
 
 class SearchResponse(BaseModel):
@@ -21,6 +22,8 @@ class SearchResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str
+    collection_name: Optional[str] = "products"  # Optional collection name, defaults to "products"
+    k: Optional[int] = 24  # Number of results to return, defaults to 24
 
 
 class ChatResponse(BaseModel):
@@ -34,3 +37,14 @@ class ChatResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     detail: Optional[str] = None
+
+
+class CollectionInfo(BaseModel):
+    name: str
+    count: int
+    metadata: Dict[str, Any]
+
+
+class CollectionsResponse(BaseModel):
+    collections: List[CollectionInfo]
+    total_collections: int

@@ -11,10 +11,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from config.opensearch import client as opensearch_client
 from utils.util_funcs import parse_filters, clean_query_for_embedding
-from models.models import SearchRequest, SearchResponse, ChatRequest, ChatResponse, ErrorResponse
+from models.models import SearchRequest, SearchResponse, ChatRequest, ChatResponse, ErrorResponse, CollectionsResponse, CollectionInfo
 
 from services.ai_services import generate_suggested_filters, generate_chat_response
-from chroma_db import search_products_chroma, get_collection_stats
+from chroma_db import search_products_chroma, get_collection_stats, list_all_collections
 
 
 # Load environment variables
@@ -80,7 +80,8 @@ async def search_fast(request: SearchRequest):
         results, search_time = search_products_chroma(
             query=cleaned_query,
             k=request.k,
-            filters=parsed_filters
+            filters=parsed_filters,
+            collection_name=request.collection_name
         )
 
         suggested_filters = generate_suggested_filters(results)
@@ -106,11 +107,10 @@ async def search_fast(request: SearchRequest):
 
 @app.get("/search-fast", response_model=SearchResponse)
 async def search_fast_get(
-    query: str = Query(..., description="Search query"),
-    k: int = Query(24, description="Number of results to return")
+    query: str = Query(..., description="Search query")
 ):
     """GET version of search-fast endpoint for easier testing"""
-    request = SearchRequest(query=query, k=k)
+    request = SearchRequest(query=query)
     return await search_fast(request)
 
 
@@ -141,8 +141,9 @@ async def chat(request: ChatRequest):
         # Perform search with extracted filters
         search_results, search_time = search_products_chroma(
             query=cleaned_query,
-            k=24,
-            filters=parsed_filters
+            k=request.k,
+            filters=parsed_filters,
+            collection_name=request.collection_name
         )
 
         chat_response = generate_chat_response(
@@ -164,6 +165,35 @@ async def chat(request: ChatRequest):
     except Exception as e:
         print(f"❌ Chat endpoint error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error during chat")
+
+
+@app.get("/get-collections", response_model=CollectionsResponse)
+async def get_collections():
+    """Get all collections in ChromaDB with their statistics"""
+    try:
+        collections_data = list_all_collections()
+        
+        # Convert to CollectionInfo objects
+        collection_list = []
+        for col in collections_data:
+            # Handle count that might be "error" string
+            count_value = col.get("count", 0)
+            if isinstance(count_value, str) and count_value == "error":
+                continue  # Skip collections with errors
+            
+            collection_list.append(CollectionInfo(
+                name=col.get("name", "unknown"),
+                count=count_value,
+                metadata=col.get("metadata", {})
+            ))
+        
+        return CollectionsResponse(
+            collections=collection_list,
+            total_collections=len(collection_list)
+        )
+    except Exception as e:
+        print(f"❌ Error getting collections: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving collections: {str(e)}")
 
 
 @app.get("/health")

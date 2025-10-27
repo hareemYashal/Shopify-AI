@@ -8,10 +8,11 @@ import os
 import json
 import time
 from typing import Optional, Dict, Any, List
-import chromadb
-from chromadb.config import Settings
 from dotenv import load_dotenv
 import boto3
+
+# Use shared ChromaDB client to avoid settings conflicts
+from chroma_utils import get_chroma_client
 
 # Load environment variables
 load_dotenv()
@@ -19,14 +20,8 @@ load_dotenv()
 # Initialize Bedrock client
 bedrock = boto3.client('bedrock-runtime', region_name=os.getenv('AWS_REGION', 'us-east-1'))
 
-# Initialize ChromaDB with proper persistence
-client = chromadb.PersistentClient(
-    path="./chroma_db",
-    settings=Settings(
-        anonymized_telemetry=False,
-        allow_reset=True
-    )
-)
+# Initialize ChromaDB using shared client
+client = get_chroma_client()
 
 # Create or get collection
 COLLECTION_NAME = "products"
@@ -222,8 +217,18 @@ def embed_products_incremental(catalog_file: str = 'data/catalog.jsonl'):
     else:
         print("❌ No new products to add to ChromaDB")
 
-def search_products_chroma(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None) -> tuple[List[Dict[str, Any]], float]:
-    """Search products using ChromaDB for maximum speed"""
+def search_products_chroma(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None, collection_name: str = "products") -> tuple[List[Dict[str, Any]], float]:
+    """Search products using ChromaDB for maximum speed
+    
+    Args:
+        query: Search query string
+        k: Number of results to return
+        filters: Optional filters to apply
+        collection_name: Name of the collection to search (defaults to "products")
+    
+    Returns:
+        Tuple of (products list, search time in ms)
+    """
     start_time = time.time()
     
     # Generate embedding
@@ -232,8 +237,15 @@ def search_products_chroma(query: str, k: int = 5, filters: Optional[Dict[str, A
         print(f"❌ Failed to generate embedding for query: '{query}'")
         return [], 0.0
     
+    # Get the specified collection
+    try:
+        search_collection = client.get_collection(name=collection_name)
+    except Exception as e:
+        print(f"❌ Error getting collection '{collection_name}': {e}")
+        return [], 0.0
+    
     print(f"🔍 Searching ChromaDB for: '{query}'")
-    print(f"📊 Collection count: {collection.count()}")
+    print(f"📊 Collection: '{collection_name}' (count: {search_collection.count()})")
     
     # Convert filters to ChromaDB format
     where_clause = None
@@ -243,7 +255,7 @@ def search_products_chroma(query: str, k: int = 5, filters: Optional[Dict[str, A
     
     # Search ChromaDB
     try:
-        results = collection.query(
+        results = search_collection.query(
             query_embeddings=[query_embedding],
             n_results=k,
             where=where_clause
@@ -374,6 +386,34 @@ def get_collection_stats() -> Dict[str, Any]:
             "error": str(e)
         }
 
+def list_all_collections() -> List[Dict[str, Any]]:
+    """List all collections in ChromaDB with their statistics"""
+    try:
+        collections = client.list_collections()
+        collection_list = []
+        
+        for col in collections:
+            try:
+                count = col.count()
+                metadata = col.metadata or {}
+                collection_list.append({
+                    "name": col.name,
+                    "count": count,
+                    "metadata": metadata
+                })
+            except Exception as e:
+                collection_list.append({
+                    "name": col.name,
+                    "count": "error",
+                    "metadata": {},
+                    "error": str(e)
+                })
+        
+        return collection_list
+    except Exception as e:
+        print(f"❌ Error listing collections: {e}")
+        return []
+
 def debug_collection():
     """Debug function to check what's in the collection"""
     try:
@@ -494,18 +534,78 @@ def test_chroma_performance():
         print()
 
 if __name__ == "__main__":
-    # Test the ChromaDB setup
-    print("🧪 Testing ChromaDB setup...")
-    
-    # Check if collection has data
-    stats = get_collection_stats()
-    print(f"📊 Collection stats: {stats}")
-    
-    if stats["total_products"] == 0:
-        print("📥 No products found, embedding products...")
-        embed_products_to_chroma()
+    print("🧠 Welcome to the ChromaDB Product Embedder\n")
+
+    persist_path = "./chroma_db"
+    client = get_chroma_client(persist_path)
+
+    # --- STEP 1: Show available JSONL files ---
+    data_dir = "./data"
+    print(f"📂 Looking for product JSONL files in: {data_dir}\n")
+
+    available_files = []
+    if os.path.exists(data_dir):
+        for f in os.listdir(data_dir):
+            if f.endswith(".jsonl"):
+                available_files.append(os.path.join(data_dir, f))
+
+    if not available_files:
+        print("❌ No JSONL files found. Please place your product files in ./data/")
+        exit(1)
+
+    print("📄 Available JSONL files:")
+    for idx, file_path in enumerate(available_files, start=1):
+        print(f"  {idx}. {os.path.basename(file_path)}")
+
+    file_choice = input("\n👉 Enter the number of the file to use: ").strip()
+    try:
+        file_idx = int(file_choice) - 1
+        catalog_file = available_files[file_idx]
+    except (ValueError, IndexError):
+        print("❌ Invalid choice. Exiting.")
+        exit(1)
+
+    print(f"\n✅ Selected file: {catalog_file}\n")
+
+    # --- STEP 2: Show existing collections ---
+    collections = client.list_collections()
+    if collections:
+        print("📦 Existing collections:")
+        for idx, col in enumerate(collections, start=1):
+            print(f"  {idx}. {col.name}")
     else:
-        print(f"✅ Found {stats['total_products']} products in ChromaDB")
-    
-    # Test performance
-    test_chroma_performance()
+        print("⚠️ No existing collections found.")
+
+    # Ask user whether to use existing or new collection
+    new_or_existing = input("\n➕ Create new collection or use existing? (new/existing): ").strip().lower()
+
+    if new_or_existing == "existing" and collections:
+        col_choice = input("👉 Enter the number of the collection to use: ").strip()
+        try:
+            col_idx = int(col_choice) - 1
+            COLLECTION_NAME = collections[col_idx].name
+        except (ValueError, IndexError):
+            print("❌ Invalid choice. Exiting.")
+            exit(1)
+    else:
+        COLLECTION_NAME = input("🆕 Enter new collection name: ").strip()
+        if not COLLECTION_NAME:
+            print("❌ Collection name cannot be empty. Exiting.")
+            exit(1)
+
+    # Create or load collection
+    print(f"\n🚀 Using collection: {COLLECTION_NAME}")
+    collection = client.get_or_create_collection(
+        name=COLLECTION_NAME,
+        metadata={"hnsw:space": "cosine"}
+    )
+
+    # --- STEP 3: Confirm and run embedding ---
+    print(f"\n📥 You are about to embed data from '{catalog_file}' into '{COLLECTION_NAME}' collection.")
+    confirm = input("Proceed? (y/n): ").strip().lower()
+    if confirm != "y":
+        print("❌ Aborted by user.")
+        exit(0)
+
+    embed_products_to_chroma(catalog_file=catalog_file)
+

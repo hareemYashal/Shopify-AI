@@ -14,6 +14,20 @@ from config.bedrock import client as bedrock
 
 
 # ================================
+# Preferences Loading
+# ================================
+def load_store_preferences() -> str:
+    """Load store preferences from preferences.txt file"""
+    try:
+        preferences_path = os.path.join(os.path.dirname(__file__), '..', 'data', 'preferences.txt')
+        with open(preferences_path, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except Exception as e:
+        print(f"❌ Error loading preferences: {e}")
+        return "Store preferences not available."
+
+
+# ================================
 # Embeddings
 # ================================
 def create_embedding(text: str, model_id: str = 'amazon.titan-embed-text-v1') -> Optional[List[float]]:
@@ -155,24 +169,25 @@ def format_products_for_llm(results: List[Dict[str, Any]], max_products: int = 5
 # LLM Chat Generation
 # ================================
 def generate_chat_response(user_message: str, search_results: List[Dict[str, Any]], search_time: float) -> Dict[str, Any]:
-    """Generate conversational response using Bedrock LLM"""
+    """Generate conversational response using Bedrock LLM with store preferences as system prompt"""
     products_text = format_products_for_llm(search_results)
+    
+    # Load store preferences to use as system prompt
+    store_preferences = load_store_preferences()
 
     prompt = f"""
-You are a helpful shopping assistant. Based on the following products, provide a natural, conversational response to the user's query.
+{store_preferences}
 
-User Query: "{user_message}"
+---
+
+Based on the above store policies and preferences, respond to the customer's query about our products.
+
+Customer Query: "{user_message}"
 
 Available Products:
 {products_text}
 
-Instructions:
-- If the user's query asks for product description(s) (e.g., "describe", "what is it", "tell me about"), return a concise description for the most relevant products using only available fields (title, category, tags). Do not invent specifications that are not provided.
-1. Provide a helpful, conversational response about the products.
-2. Mention specific product names and prices when relevant.
-3. Use Product IDs when referring to products.
-4. If no products match, suggest alternatives or ask for clarification.
-5. Keep the response concise but informative.
+Please provide a response that follows our store guidelines, tone, and business rules. Focus on being helpful, authentic, and aligned with our brand values.
 """
 
     try:

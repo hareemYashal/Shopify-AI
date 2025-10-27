@@ -7,6 +7,7 @@ Uses incremental processing to avoid re-embedding existing products
 import json
 import time
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 import boto3
 from config.opensearch import client as opensearch_client
@@ -74,10 +75,48 @@ def build_embedding_text(product):
     
     return " ".join(text_parts)
 
-def process_catalog():
-    """Process catalog.jsonl and embed products"""
+def process_single_product(product):
+    """Process a single product: generate embedding and return document"""
+    try:
+        product_id = product['product_id']
+        
+        # Build embedding text
+        embedding_text = build_embedding_text(product)
+        
+        # Generate embedding
+        embedding = create_embedding(embedding_text)
+        
+        if embedding is None:
+            print(f"❌ Failed to generate embedding for {product_id}")
+            return None
+        
+        # Prepare document for OpenSearch
+        doc = {
+            "product_id": product["product_id"],
+            "title": product["title"],
+            "text": product["text"],
+            "price": product["price"],
+            "url": product["url"],
+            "image": product["image"],
+            "in_stock": product["in_stock"],
+            "category": product["category"],
+            "tags": product["tags"],
+            "embedding": embedding
+        }
+        
+        return doc
+        
+    except Exception as e:
+        print(f"❌ Error processing {product['product_id']}: {e}")
+        return None
+
+def process_catalog(max_workers=10):
+    """Process catalog.jsonl and embed products with parallel processing"""
     
-    print("🔄 Starting product embedding process...")
+    print("🔄 Starting product embedding process with parallel processing...")
+    print(f"⚡ Using {max_workers} parallel workers")
+    
+    start_time = time.time()
     
     # Get already processed products
     processed_ids = get_processed_products()
@@ -85,7 +124,7 @@ def process_catalog():
     
     # Load catalog
     products = []
-    with open('data/catalog.jsonl', 'r') as f:
+    with open('data/catalog.jsonl', 'r', encoding='utf-8') as f:
         for line_num, line in enumerate(f, 1):
             if line.strip():
                 try:
@@ -97,78 +136,66 @@ def process_catalog():
     
     print(f"📦 Loaded {len(products)} products from catalog")
     
-    # Process products
+    # Filter out already processed products
+    products_to_process = [p for p in products if p['product_id'] not in processed_ids]
+    print(f"🆕 Found {len(products_to_process)} new products to process")
+    
+    if not products_to_process:
+        print("✅ No new products to process!")
+        return
+    
+    # Process products in parallel
     new_count = 0
-    updated_count = 0
-    skipped_count = 0
     error_count = 0
     
-    for i, product in enumerate(products):
-        product_id = product['product_id']
+    # Use ThreadPoolExecutor for parallel processing
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_product = {executor.submit(process_single_product, product): product 
+                            for product in products_to_process}
         
-        try:
-            # Check if already processed
-            if product_id in processed_ids:
-                print(f"⏭️  Skipping {i+1}/{len(products)}: {product['title']} (already processed)")
-                skipped_count += 1
-                continue
+        # Process completed tasks
+        for i, future in enumerate(as_completed(future_to_product), 1):
+            product = future_to_product[future]
             
-            print(f"🔄 Processing {i+1}/{len(products)}: {product['title']}")
-            
-            # Build embedding text
-            embedding_text = build_embedding_text(product)
-            print(f"   📝 Embedding text: {embedding_text[:100]}...")
-            
-            # Generate embedding
-            embedding = create_embedding(embedding_text)
-            
-            if embedding is None:
-                print(f"❌ Failed to generate embedding for {product_id}")
+            try:
+                doc = future.result()
+                
+                if doc is None:
+                    error_count += 1
+                    continue
+                
+                # Upsert to OpenSearch
+                opensearch_client.index(
+                    index='products',
+                    id=doc['product_id'],
+                    body=doc
+                )
+                
+                print(f"✅ [{i}/{len(products_to_process)}] Indexed: {doc['title'][:50]}...")
+                new_count += 1
+                
+            except Exception as e:
+                print(f"❌ Error indexing {product['product_id']}: {e}")
                 error_count += 1
-                continue
-            
-            # Prepare document for OpenSearch
-            doc = {
-                "product_id": product["product_id"],
-                "title": product["title"],
-                "text": product["text"],
-                "price": product["price"],
-                "url": product["url"],
-                "image": product["image"],
-                "in_stock": product["in_stock"],
-                "category": product["category"],
-                "tags": product["tags"],
-                "embedding": embedding
-            }
-            
-            # Upsert to OpenSearch
-            opensearch_client.index(
-                index='products',
-                id=product_id,
-                body=doc
-            )
-            
-            print(f"✅ Successfully indexed: {product['title']}")
-            new_count += 1
-            
-            # Rate limiting to avoid throttling
-            time.sleep(0.1)
-            
-        except Exception as e:
-            print(f"❌ Error processing {product_id}: {e}")
-            error_count += 1
-            continue
     
     # Refresh index to make documents searchable
+    print("🔄 Refreshing index...")
     opensearch_client.indices.refresh(index='products')
     
+    # Calculate time taken
+    elapsed_time = time.time() - start_time
+    
     # Print summary
+    skipped_count = len(products) - len(products_to_process)
     print(f"\n🎉 Processing complete!")
+    print(f"⚡ Total time: {elapsed_time:.2f}s ({elapsed_time/60:.1f} minutes)")
+    print(f"⚡ Average time per product: {elapsed_time/len(products_to_process):.2f}s")
     print(f"📊 Summary:")
     print(f"   ✅ New products: {new_count}")
     print(f"   ⏭️  Skipped (already processed): {skipped_count}")
     print(f"   ❌ Errors: {error_count}")
-    print(f"   📦 Total processed: {len(products)}")
+    print(f"   📦 Total processed: {len(products_to_process)}")
     
     # Get final index stats
     try:
