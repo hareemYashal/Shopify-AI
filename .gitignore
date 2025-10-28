@@ -3,3 +3,9 @@ venv/
 __pycache__/
 
 chroma_db/
+*.bin
+
+/config/backup/
+/config/backups
+/chroma_db
+*.sqlite3

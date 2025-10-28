@@ -280,15 +280,15 @@ Please provide a response that follows our store guidelines, tone, and business 
         result = json.loads(response['body'].read())
         ai_response = result['outputs'][0]['text'].strip()
 
+        # Always cite all search results (don't depend on LLM mentioning product IDs)
         cited_items = []
         product_links = []
         for product in search_results:
-            if str(product['product_id']) in ai_response:
-                cited_items.append(product['product_id'])
-                product_links.append({
-                    "product_id": product['product_id'],
-                    "url": product['url']
-                })
+            cited_items.append(product['product_id'])
+            product_links.append({
+                "product_id": product['product_id'],
+                "url": product['url']
+            })
 
         return {
             "answer": ai_response,
