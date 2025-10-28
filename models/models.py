@@ -48,3 +48,13 @@ class CollectionInfo(BaseModel):
 class CollectionsResponse(BaseModel):
     collections: List[CollectionInfo]
     total_collections: int
+
+
+class SystemPromptResponse(BaseModel):
+    prompt: str
+    last_updated: Optional[str] = None
+    filename: str
+
+
+class SystemPromptUpdateRequest(BaseModel):
+    prompt: str

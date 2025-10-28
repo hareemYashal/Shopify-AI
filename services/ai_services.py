@@ -14,17 +14,93 @@ from config.bedrock import client as bedrock
 
 
 # ================================
-# Preferences Loading
+# Preferences Loading with Caching
 # ================================
-def load_store_preferences() -> str:
-    """Load store preferences from sys_prompt.txt file"""
+_system_prompt_cache = None
+_cache_timestamp = None
+_cache_file_mtime = None
+
+
+def load_store_preferences(force_reload: bool = False) -> str:
+    """Load store preferences from sys_prompt.txt file with caching"""
+    global _system_prompt_cache, _cache_timestamp, _cache_file_mtime
+    
     try:
         preferences_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'sys_prompt.txt')
+        
+        # Check if file has been modified
+        if not force_reload and _system_prompt_cache:
+            try:
+                current_mtime = os.path.getmtime(preferences_path)
+                if current_mtime == _cache_file_mtime:
+                    # File hasn't changed, return cached version
+                    return _system_prompt_cache
+            except:
+                pass
+        
+        # Load from file
         with open(preferences_path, 'r', encoding='utf-8') as f:
-            return f.read().strip()
+            _system_prompt_cache = f.read().strip()
+            _cache_timestamp = time.time()
+            _cache_file_mtime = os.path.getmtime(preferences_path)
+        
+        return _system_prompt_cache
     except Exception as e:
         print(f"❌ Error loading system prompt: {e}")
         return "Store preferences not available."
+
+
+def reload_system_prompt_cache() -> bool:
+    """Force reload of system prompt from file"""
+    try:
+        load_store_preferences(force_reload=True)
+        print("✅ System prompt cache reloaded successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Error reloading system prompt cache: {e}")
+        return False
+
+
+def update_system_prompt(new_prompt: str) -> Dict[str, Any]:
+    """Update the system prompt file with new content"""
+    import shutil
+    from datetime import datetime
+    
+    try:
+        preferences_path = os.path.join(os.path.dirname(__file__), '..', 'config', 'sys_prompt.txt')
+        backup_dir = os.path.join(os.path.dirname(__file__), '..', 'config', 'backups')
+        
+        # Create backups directory if it doesn't exist
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # Create backup of current file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = os.path.join(backup_dir, f'sys_prompt_backup_{timestamp}.txt')
+        
+        if os.path.exists(preferences_path):
+            shutil.copy2(preferences_path, backup_path)
+            print(f"📦 Backed up system prompt to: {backup_path}")
+        
+        # Write new content to file
+        with open(preferences_path, 'w', encoding='utf-8') as f:
+            f.write(new_prompt)
+        
+        # Reload cache immediately
+        reload_system_prompt_cache()
+        
+        return {
+            "success": True,
+            "message": "System prompt updated successfully",
+            "backup_path": backup_path,
+            "timestamp": timestamp
+        }
+        
+    except Exception as e:
+        print(f"❌ Error updating system prompt: {e}")
+        return {
+            "success": False,
+            "message": f"Error updating system prompt: {str(e)}"
+        }
 
 
 # ================================

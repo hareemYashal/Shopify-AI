@@ -2,6 +2,7 @@ import os
 import json
 import time
 import re
+import datetime
 from typing import Optional, Dict, Any, List
 
 from dotenv import load_dotenv
@@ -11,9 +12,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from config.opensearch import client as opensearch_client
 from utils.util_funcs import parse_filters, clean_query_for_embedding
-from models.models import SearchRequest, SearchResponse, ChatRequest, ChatResponse, ErrorResponse, CollectionsResponse, CollectionInfo
+from models.models import (SearchRequest, SearchResponse, ChatRequest, ChatResponse, ErrorResponse, 
+                          CollectionsResponse, CollectionInfo, SystemPromptResponse, SystemPromptUpdateRequest)
 
-from services.ai_services import generate_suggested_filters, generate_chat_response
+from services.ai_services import generate_suggested_filters, generate_chat_response, load_store_preferences, update_system_prompt, reload_system_prompt_cache
 from chroma_db import search_products_chroma, get_collection_stats, list_all_collections
 
 
@@ -194,6 +196,72 @@ async def get_collections():
     except Exception as e:
         print(f"❌ Error getting collections: {e}")
         raise HTTPException(status_code=500, detail=f"Error retrieving collections: {str(e)}")
+
+
+@app.get("/system-prompt", response_model=SystemPromptResponse)
+async def get_system_prompt():
+    """
+    Get the current system prompt content
+    This endpoint is used by the View tab in the frontend
+    """
+    try:
+        preferences_path = os.path.join("config", "sys_prompt.txt")
+        
+        # Get file modification time
+        if os.path.exists(preferences_path):
+            file_mtime = os.path.getmtime(preferences_path)
+            last_updated = datetime.datetime.fromtimestamp(file_mtime).isoformat()
+        else:
+            last_updated = None
+        
+        # Load current prompt
+        prompt = load_store_preferences()
+        
+        return SystemPromptResponse(
+            prompt=prompt,
+            last_updated=last_updated,
+            filename="config/sys_prompt.txt"
+        )
+    except Exception as e:
+        print(f"❌ Error getting system prompt: {e}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving system prompt: {str(e)}")
+
+
+@app.put("/system-prompt", response_model=Dict[str, Any])
+async def update_system_prompt_endpoint(request: SystemPromptUpdateRequest):
+    """
+    Update the system prompt content
+    This endpoint is used by the Edit tab in the frontend when user clicks 'Modify'
+    """
+    try:
+        # Validate the prompt content
+        if not request.prompt or len(request.prompt.strip()) == 0:
+            raise HTTPException(status_code=400, detail="Prompt cannot be empty")
+        
+        if len(request.prompt) < 50:
+            raise HTTPException(status_code=400, detail="Prompt is too short (minimum 50 characters)")
+        
+        if len(request.prompt) > 50000:
+            raise HTTPException(status_code=400, detail="Prompt is too long (maximum 50000 characters)")
+        
+        # Update the prompt
+        result = update_system_prompt(request.prompt)
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail=result.get("message", "Failed to update system prompt"))
+        
+        return {
+            "success": True,
+            "message": "System prompt updated successfully and cache reloaded",
+            "backup_path": result.get("backup_path"),
+            "timestamp": result.get("timestamp")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Error updating system prompt: {e}")
+        raise HTTPException(status_code=500, detail=f"Error updating system prompt: {str(e)}")
 
 
 @app.get("/health")

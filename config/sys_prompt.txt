@@ -66,4 +66,3 @@ When two items tie on relevance and stock:
 •	“Promote Collection X”: turn on/off with a percentage boost.
 •	“Strict budget mode”: enforce budgets exactly; no over-budget items in top 12.
 •	“New arrivals first”: temporary switch for campaigns.
-
