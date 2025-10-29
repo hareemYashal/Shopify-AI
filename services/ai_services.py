@@ -251,8 +251,8 @@ def generate_chat_response(user_message: str, search_results: List[Dict[str, Any
     # Load store preferences to use as system prompt
     store_preferences = load_store_preferences()
 
-    prompt = f"""
-{store_preferences}
+    # Build the prompt
+    prompt = f"""USE THIS AS SYSTEM PROMPT: {store_preferences}
 
 ---
 
@@ -264,21 +264,39 @@ Available Products:
 {products_text}
 
 Please provide a response that follows our store guidelines, tone, and business rules. Focus on being helpful, authentic, and aligned with our brand values.
+
+Also just answer the question, don't mention the store name or any other details about store policies or preferences.
+
+Your response should NOT contain 'Response: ' at the beginning.
 """
 
     try:
+        # Try prompt format first (simpler, works with Mistral models in Bedrock)
         response = bedrock.invoke_model(
-            modelId='mistral.mistral-small-2402-v1:0',
+            modelId='mistral.mistral-large-2402-v1:0',
             body=json.dumps({
                 "prompt": prompt,
-                "max_tokens": 300,
-                "temperature": 0.3,
+                "max_tokens": 700,
+                "temperature": 0.7,
                 "top_p": 0.9
             })
         )
 
         result = json.loads(response['body'].read())
-        ai_response = result['outputs'][0]['text'].strip()
+        
+        # Mistral models in Bedrock typically return: {"outputs": [{"text": "..."}]}
+        if 'outputs' in result and len(result['outputs']) > 0:
+            output = result['outputs'][0]
+            if 'text' in output:
+                ai_response = output['text'].strip()
+            else:
+                # Debug: log unexpected structure
+                print(f"⚠️ Unexpected output structure: {json.dumps(output, indent=2)[:500]}")
+                raise ValueError(f"Unexpected response format: output missing 'text' field. Keys: {list(output.keys())}")
+        else:
+            # Debug: log full response
+            print(f"⚠️ Unexpected response structure: {json.dumps(result, indent=2)[:500]}")
+            raise ValueError(f"Unexpected response format from Mistral model. Response keys: {list(result.keys())}")
 
         # Always cite all search results (don't depend on LLM mentioning product IDs)
         cited_items = []
