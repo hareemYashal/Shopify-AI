@@ -2,6 +2,9 @@
 """
 ChromaDB service for ultra-fast vector search
 Provides 90%+ faster search compared to OpenSearch
+
+Use this file to embed products into ChromaDB and search for products using ChromaDB.
+
 """
 
 import os
@@ -14,7 +17,7 @@ from dotenv import load_dotenv
 import boto3
 
 # Use shared ChromaDB client to avoid settings conflicts
-from chroma_utils import get_chroma_client
+from utils.chroma_utils import get_chroma_client
 
 # Load environment variables
 load_dotenv()
