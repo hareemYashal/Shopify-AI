@@ -655,13 +655,18 @@ def list_all_indices() -> List[Dict[str, Any]]:
         client = get_opensearch_client()
     
     try:
-        indices = client.indices.get_alias("*")
+        # Use cat.indices() API which is more reliable across versions
+        indices_info = client.cat.indices(format='json')
         index_list = []
         
-        for index_name in indices.keys():
+        for index_info in indices_info:
+            # Skip system indices (starting with .)
+            index_name = index_info.get('index', '')
+            if index_name.startswith('.'):
+                continue
+                
             try:
-                stats = client.indices.stats(index=index_name)
-                doc_count = stats['indices'][index_name]['total']['docs']['count']
+                doc_count = int(index_info.get('docs.count', 0))
                 index_list.append({
                     "name": index_name,
                     "count": doc_count
