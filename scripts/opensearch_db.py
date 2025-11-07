@@ -25,12 +25,25 @@ bedrock = boto3.client('bedrock-runtime', region_name=os.getenv('AWS_REGION', 'u
 # Initialize OpenSearch client
 def get_opensearch_client():
     """Get OpenSearch client with configuration from environment"""
-    host = os.getenv("OPENSEARCH_HOST", "").replace("https://", "").replace("http://", "")
+    from urllib.parse import urlparse
+    
+    host_url = os.getenv("OPENSEARCH_HOST", "")
     username = os.getenv("OPENSEARCH_USER", "")
     password = os.getenv("OPENSEARCH_PASS", "")
     
-    if not host or not username or not password:
+    if not host_url or not username or not password:
         raise ValueError("OpenSearch credentials not found in environment variables")
+    
+    # Parse the URL properly to extract host and port
+    if not host_url.startswith(('http://', 'https://')):
+        host_url = f'https://{host_url}'
+    
+    parsed = urlparse(host_url)
+    host = parsed.hostname or parsed.netloc.split(':')[0]
+    port = parsed.port or 443
+    
+    # Clean up any trailing slashes or paths
+    host = host.strip('/')
     
     # Create a custom connection with increased timeout
     from requests.adapters import HTTPAdapter
@@ -45,7 +58,7 @@ def get_opensearch_client():
             ))
     
     return OpenSearch(
-        hosts=[{"host": host, "port": 443}],
+        hosts=[{"host": host, "port": port}],
         http_auth=(username, password),
         use_ssl=True,
         verify_certs=True,

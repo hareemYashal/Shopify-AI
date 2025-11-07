@@ -1,15 +1,28 @@
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from dotenv import load_dotenv
+from urllib.parse import urlparse
 import os
 
 load_dotenv()
 
-host = os.getenv("OPENSEARCH_HOST").replace("https://", "")
+# Parse OpenSearch host URL properly
+host_url = os.getenv("OPENSEARCH_HOST", "")
 username = os.getenv("OPENSEARCH_USER")
 password = os.getenv("OPENSEARCH_PASS")
 
+# Parse the URL properly to extract host and port
+if not host_url.startswith(('http://', 'https://')):
+    host_url = f'https://{host_url}'
+
+parsed = urlparse(host_url)
+host = parsed.hostname or parsed.netloc.split(':')[0]
+port = parsed.port or 443
+
+# Clean up any trailing slashes or paths
+host = host.strip('/')
+
 client = OpenSearch(
-    hosts=[{"host": host, "port": 443}],
+    hosts=[{"host": host, "port": port}],
     http_auth=(username, password),
     use_ssl=True,
     verify_certs=True,
