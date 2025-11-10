@@ -6,6 +6,7 @@ Mirrors the ChromaDB workflow but targets AWS OpenSearch Serverless collections
 configured for `vector_search`.
 """
 
+import fnmatch
 import json
 import os
 import random
@@ -366,8 +367,8 @@ def embed_products_incremental(
     )
 
 
-def convert_filters_to_opensearch(filters: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert application-level filters to OpenSearch bool clauses."""
+def convert_filters_to_opensearch(filters: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convert application-level filters to an OpenSearch-compatible filter query."""
     filter_clauses: List[Dict[str, Any]] = []
 
     for field, value in filters.items():
@@ -385,6 +386,10 @@ def convert_filters_to_opensearch(filters: Dict[str, Any]) -> Dict[str, Any]:
                     range_clause["gte"] = value["gte"]
                 if "lte" in value:
                     range_clause["lte"] = value["lte"]
+                if "$gte" in value:
+                    range_clause["gte"] = value["$gte"]
+                if "$lte" in value:
+                    range_clause["lte"] = value["$lte"]
                 if range_clause:
                     filter_clauses.append({"range": {"price": range_clause}})
         elif field == "tags":
@@ -396,7 +401,10 @@ def convert_filters_to_opensearch(filters: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 filter_clauses.append({"term": {"tags": value}})
 
-    return filter_clauses
+    if not filter_clauses:
+        return None
+
+    return {"bool": {"filter": filter_clauses}}
 
 
 def search_products_opensearch(
@@ -413,37 +421,21 @@ def search_products_opensearch(
         print(f"❌ Failed to generate embedding for query: '{query}'")
         return [], 0.0
 
-    filter_clauses = convert_filters_to_opensearch(filters or {})
+    filter_query = convert_filters_to_opensearch(filters or {})
 
-    if filter_clauses:
-        query_body: Dict[str, Any] = {
-            "size": k,
-            "query": {
-                "bool": {
-                    "must": [
-                        {
-                            "knn": {
-                                "field": "embedding",
-                                "query_vector": query_embedding,
-                                "k": k,
-                            }
-                        }
-                    ],
-                    "filter": filter_clauses,
-                }
-            },
-        }
-    else:
-        query_body = {
-            "size": k,
-            "query": {
-                "knn": {
-                    "field": "embedding",
-                    "query_vector": query_embedding,
-                    "k": k,
-                }
-            },
-        }
+    query_body: Dict[str, Any] = {
+        "size": k,
+        "query": {
+            "knn": {
+                "field": "embedding",
+                "query_vector": query_embedding,
+                "k": k,
+            }
+        },
+    }
+
+    if filter_query:
+        query_body["query"]["knn"]["filter"] = filter_query
 
     try:
         response = client.search(index=index_name, body=query_body)
@@ -480,8 +472,8 @@ def search_products_opensearch(
 def get_index_stats(index_name: str = DEFAULT_INDEX_NAME) -> Dict[str, Any]:
     """Return basic stats for the OpenSearch index."""
     try:
-        stats = client.indices.stats(index=index_name)
-        doc_count = stats["indices"][index_name]["total"]["docs"]["count"]
+        count_response = client.count(index=index_name)
+        doc_count = count_response.get("count", 0)
         return {
             "status": "healthy",
             "index": index_name,
@@ -524,19 +516,49 @@ def debug_sample(index_name: str = DEFAULT_INDEX_NAME, sample_size: int = 3) -> 
 
 def list_indices(pattern: str = "*") -> List[str]:
     """Return a sorted list of index names matching the given pattern."""
+    discovered: set[str] = set()
+
+    # Try data-plane APIs first (may be unsupported on Serverless)
     try:
         indices = client.indices.get(index=pattern)
-        return sorted(indices.keys())
+        discovered.update(indices.keys())
     except Exception:
+        pass
+
+    if not discovered:
         try:
             aliases = client.indices.get_alias(pattern)
-            return sorted(aliases.keys())
+            discovered.update(aliases.keys())
         except Exception:
-            try:
-                stats = client.indices.stats(pattern)
-                return sorted(stats.get("indices", {}).keys())
-            except Exception:
-                return []
+            pass
+
+    if not discovered:
+        try:
+            stats = client.indices.stats(pattern)
+            discovered.update(stats.get("indices", {}).keys())
+        except Exception:
+            pass
+
+    # Fallback to control-plane API for OpenSearch Serverless collections
+    if not discovered:
+        try:
+            oss_client = boto3.client(
+                "opensearchserverless",
+                region_name=os.getenv("AWS_REGION", "us-east-1"),
+            )
+            paginator = oss_client.get_paginator("list_collections")
+            for page in paginator.paginate(maxResults=100):
+                for summary in page.get("collectionSummaries", []):
+                    name = summary.get("name")
+                    collection_type = summary.get("collectionType")
+                    if collection_type and collection_type.upper() != "VECTORSEARCH":
+                        continue
+                    if name and fnmatch.fnmatch(name, pattern):
+                        discovered.add(name)
+        except Exception:
+            pass
+
+    return sorted(discovered)
 
 
 # --------------------------------------------------------------------------- #
