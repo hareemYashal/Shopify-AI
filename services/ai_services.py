@@ -123,58 +123,70 @@ def create_embedding(text: str, model_id: str = 'amazon.titan-embed-text-v1') ->
 # ================================
 # Search Logic
 # ================================
-def search_products(query: str, k: int = 5, filters: Optional[Dict[str, Any]] = None) -> tuple[List[Dict[str, Any]], float]:
+def _build_filter_query(filters: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    """Convert parsed filters to an OpenSearch filter query."""
+    if not filters:
+        return None
+
+    clauses: List[Dict[str, Any]] = []
+    for field, value in filters.items():
+        if field == "in_stock":
+            if isinstance(value, dict) and "eq" in value:
+                clauses.append({"term": {"in_stock": value["eq"]}})
+            else:
+                clauses.append({"term": {"in_stock": value}})
+        elif field == "category":
+            clauses.append({"term": {"category": value}})
+        elif field == "price":
+            if isinstance(value, dict):
+                range_clause: Dict[str, Any] = {}
+                if "gte" in value:
+                    range_clause["gte"] = value["gte"]
+                if "lte" in value:
+                    range_clause["lte"] = value["lte"]
+                if "$gte" in value:
+                    range_clause["gte"] = value["$gte"]
+                if "$lte" in value:
+                    range_clause["lte"] = value["$lte"]
+                if range_clause:
+                    clauses.append({"range": {"price": range_clause}})
+    if not clauses:
+        return None
+
+    return {"bool": {"filter": clauses}}
+
+
+def search_products(
+    query: str,
+    k: int = 5,
+    filters: Optional[Dict[str, Any]] = None,
+    index_name: str = "products",
+) -> tuple[List[Dict[str, Any]], float]:
     """Search for products using vector similarity"""
     query_embedding = create_embedding(query)
     if query_embedding is None:
         return [], 0.0
 
     # Base KNN search query
+    filter_query = _build_filter_query(filters)
     search_body = {
         "size": k,
         "query": {
             "knn": {
-                "embedding": {
-                    "vector": query_embedding,
-                    "k": k
-                }
+                "field": "embedding",
+                "query_vector": query_embedding,
+                "k": k,
             }
-        }
+        },
     }
 
-    # Add filters if provided
-    if filters:
-        search_body["query"] = {
-            "bool": {
-                "must": [
-                    {
-                        "knn": {
-                            "embedding": {
-                                "vector": query_embedding,
-                                "k": k
-                            }
-                        }
-                    }
-                ],
-                "filter": []
-            }
-        }
-
-        for field, value in filters.items():
-            if field == "in_stock":
-                search_body["query"]["bool"]["filter"].append({"term": {field: value}})
-            elif field == "category":
-                search_body["query"]["bool"]["filter"].append({"term": {field: value}})
-            elif field == "price":
-                if isinstance(value, dict) and "$lte" in value:
-                    search_body["query"]["bool"]["filter"].append({"range": {"price": {"lte": value["$lte"]}}})
-                if isinstance(value, dict) and "$gte" in value:
-                    search_body["query"]["bool"]["filter"].append({"range": {"price": {"gte": value["$gte"]}}})
+    if filter_query:
+        search_body["query"]["knn"]["filter"] = filter_query
 
     # Execute search
     start_time = time.time()
     try:
-        response = opensearch_client.search(index='products', body=search_body)
+        response = opensearch_client.search(index=index_name, body=search_body)
         search_time = (time.time() - start_time) * 1000  # ms
 
         results = []
