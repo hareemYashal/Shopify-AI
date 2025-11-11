@@ -378,7 +378,10 @@ def convert_filters_to_opensearch(filters: Dict[str, Any]) -> Optional[Dict[str,
             else:
                 filter_clauses.append({"term": {"in_stock": value}})
         elif field == "category":
-            filter_clauses.append({"term": {"category": value}})
+            if isinstance(value, list):
+                filter_clauses.append({"terms": {"category": value}})
+            else:
+                filter_clauses.append({"term": {"category": value}})
         elif field == "price":
             if isinstance(value, dict):
                 range_clause: Dict[str, Any] = {}
@@ -427,15 +430,16 @@ def search_products_opensearch(
         "size": k,
         "query": {
             "knn": {
-                "field": "embedding",
-                "query_vector": query_embedding,
-                "k": k,
+                "embedding": {
+                    "vector": query_embedding,
+                    "k": k,
+                }
             }
         },
     }
 
     if filter_query:
-        query_body["query"]["knn"]["filter"] = filter_query
+        query_body["query"]["knn"]["embedding"]["filter"] = filter_query
 
     try:
         response = client.search(index=index_name, body=query_body)
