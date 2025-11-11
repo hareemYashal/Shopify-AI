@@ -11,11 +11,13 @@ import json
 import os
 import random
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError, as_completed
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ReadTimeoutError
 from dotenv import load_dotenv
 from opensearchpy import OpenSearch, RequestsHttpConnection
 from opensearchpy.helpers import bulk, scan
@@ -29,8 +31,11 @@ load_dotenv()
 # --------------------------------------------------------------------------- #
 
 EMBEDDING_DIMENSION = 1536  # Must match the embedding model output
-MAX_WORKERS = 7
-DEFAULT_BATCH_SIZE = 1000
+MAX_WORKERS = 5
+DEFAULT_BATCH_SIZE = 100
+EMBEDDING_CONNECT_TIMEOUT = int(os.getenv("EMBED_CONNECT_TIMEOUT", "10"))
+EMBEDDING_READ_TIMEOUT = int(os.getenv("EMBED_READ_TIMEOUT", "40"))
+EMBEDDING_MAX_RETRIES = int(os.getenv("EMBED_MAX_RETRIES", "5"))
 DEFAULT_INDEX_NAME = os.getenv("OPENSEARCH_INDEX", "products")
 
 
@@ -144,25 +149,48 @@ def ensure_index(index_name: str) -> None:
 # Bedrock embedding helpers
 # --------------------------------------------------------------------------- #
 
-bedrock = boto3.client("bedrock-runtime", region_name=os.getenv("AWS_REGION", "us-east-1"))
+bedrock = boto3.client(
+    "bedrock-runtime",
+    region_name=os.getenv("AWS_REGION", "us-east-1"),
+    config=Config(
+        connect_timeout=EMBEDDING_CONNECT_TIMEOUT,
+        read_timeout=EMBEDDING_READ_TIMEOUT,
+        retries={"max_attempts": EMBEDDING_MAX_RETRIES, "mode": "adaptive"},
+    ),
+)
 
 
 def create_embedding(
     text: str,
     model_id: str = "amazon.titan-embed-text-v1",
-    max_retries: int = 3,
+    max_retries: int = EMBEDDING_MAX_RETRIES,
+    request_timeout: float = EMBEDDING_READ_TIMEOUT + EMBEDDING_CONNECT_TIMEOUT,
 ) -> Optional[List[float]]:
-    """Generate embeddings using Amazon Bedrock with retry + backoff."""
+    """Generate embeddings using Amazon Bedrock with retry + backoff + timeout."""
+
+    # Guard against empty strings which Bedrock dislikes.
+    payload_text = text.strip()
+    if not payload_text:
+        return []
+
     for attempt in range(max_retries):
         try:
             time.sleep(0.05 + random.uniform(0, 0.05))  # jitter
 
-            response = bedrock.invoke_model(
-                modelId=model_id,
-                body=json.dumps({"inputText": text}),
-            )
-            result = json.loads(response["body"].read())
-            embedding = result["embedding"]
+            def _invoke() -> Dict[str, Any]:
+                response = bedrock.invoke_model(
+                    modelId=model_id,
+                    body=json.dumps({"inputText": payload_text}),
+                )
+                return json.loads(response["body"].read())
+
+            with ThreadPoolExecutor(max_workers=1) as single_executor:
+                future = single_executor.submit(_invoke)
+                result = future.result(timeout=request_timeout)
+
+            embedding = result.get("embedding")
+            if not isinstance(embedding, list):
+                raise ValueError("Embedding payload missing or not a list.")
 
             if len(embedding) != EMBEDDING_DIMENSION:
                 raise ValueError(
@@ -170,13 +198,22 @@ def create_embedding(
                 )
 
             return embedding
+        except TimeoutError:
+            error_msg = "Timeout waiting for Bedrock embedding response."
+        except ReadTimeoutError as exc:
+            error_msg = f"Read timeout from Bedrock: {exc}"
+        except BotoCoreError as exc:
+            error_msg = f"Bedrock client error: {exc}"
         except Exception as exc:
-            if attempt < max_retries - 1:
-                wait_time = (2**attempt) + random.uniform(0, 1)
-                print(f"⚠️  Retry {attempt + 1}/{max_retries} after {wait_time:.1f}s... ({exc})")
-                time.sleep(wait_time)
-            else:
-                print(f"❌ Error creating embedding after {max_retries} attempts: {exc}")
+            error_msg = str(exc)
+
+        if attempt < max_retries - 1:
+            wait_time = min(10, (2**attempt) + random.uniform(0, 1))
+            print(f"⚠️  Retry {attempt + 1}/{max_retries} after {wait_time:.1f}s... ({error_msg})")
+            time.sleep(wait_time)
+        else:
+            print(f"❌ Error creating embedding after {max_retries} attempts: {error_msg}")
+
     return None
 
 
@@ -326,7 +363,8 @@ def embed_products_to_opensearch(
 
         results: Dict[int, Dict[str, Any]] = {}
 
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        worker_count = min(MAX_WORKERS, max(1, len(batch)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
             futures = {
                 executor.submit(process_single_product, product): idx
                 for idx, product in enumerate(batch)
