@@ -11,11 +11,15 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from utils.util_funcs import parse_filters, clean_query_for_embedding
-from models.models import (SearchRequest, SearchResponse, ChatRequest, ChatResponse, ErrorResponse, 
+from models.models import (SearchRequest, SearchResponse, ChatRequest, ChatResponse, ErrorResponse,
                           CollectionsResponse, CollectionInfo, SystemPromptResponse, SystemPromptUpdateRequest)
 
 from services.ai_services import generate_suggested_filters, generate_chat_response, load_store_preferences, update_system_prompt, reload_system_prompt_cache
-from scripts.opensearch_db import search_products_opensearch, get_index_stats, list_all_indices
+from create_opensearch_db import (
+    search_products_opensearch,
+    get_index_stats,
+    list_indices,
+)
 
 
 # Load environment variables
@@ -77,14 +81,12 @@ async def search_fast(request: SearchRequest):
             print(f"🔍 Extracted filters: {parsed_filters}")
             print(f"📝 Cleaned query: '{cleaned_query}' (original: '{request.query}')")
 
-        # Perform search with extracted filters using OpenSearch
-        # Map collection_name to index_name for OpenSearch
-        index_name = request.collection_name or "products"
+        # Perform search with extracted filters
         results, search_time = search_products_opensearch(
             query=cleaned_query,
             k=request.k,
             filters=parsed_filters,
-            index_name=index_name
+            index_name=request.collection_name
         )
 
         suggested_filters = generate_suggested_filters(results)
@@ -141,14 +143,12 @@ async def chat(request: ChatRequest):
             print(f"💬 Chat filters: {parsed_filters}")
             print(f"💬 Chat query: '{cleaned_query}' (original: '{request.message}')")
 
-        # Perform search with extracted filters using OpenSearch
-        # Map collection_name to index_name for OpenSearch
-        index_name = request.collection_name or "products"
+        # Perform search with extracted filters
         search_results, search_time = search_products_opensearch(
             query=cleaned_query,
             k=request.k,
             filters=parsed_filters,
-            index_name=index_name
+            index_name=request.collection_name
         )
 
         chat_response = generate_chat_response(
@@ -176,22 +176,22 @@ async def chat(request: ChatRequest):
 async def get_collections():
     """Get all indices in OpenSearch with their statistics"""
     try:
-        collections_data = list_all_indices()
-        
-        # Convert to CollectionInfo objects
+        indices = list_indices()
         collection_list = []
-        for col in collections_data:
-            # Handle count that might be "error" string
-            count_value = col.get("count", 0)
-            if isinstance(count_value, str) and count_value == "error":
-                continue  # Skip collections with errors
-            
-            collection_list.append(CollectionInfo(
-                name=col.get("name", "unknown"),
-                count=count_value,
-                metadata=col.get("metadata", {})
-            ))
-        
+
+        for index_name in indices:
+            stats = get_index_stats(index_name)
+            if stats.get("status") != "healthy":
+                continue
+
+            collection_list.append(
+                CollectionInfo(
+                    name=index_name,
+                    count=stats.get("documents", 0),
+                    metadata={},
+                )
+            )
+
         return CollectionsResponse(
             collections=collection_list,
             total_collections=len(collection_list)
@@ -271,12 +271,17 @@ async def update_system_prompt_endpoint(request: SystemPromptUpdateRequest):
 async def health_check():
     """Health check endpoint"""
     try:
-        # Check OpenSearch health using default "products" index
-        opensearch_stats = get_index_stats("products")
-        opensearch_status = "healthy" if opensearch_stats["status"] == "healthy" else f"unhealthy: {opensearch_stats.get('error', 'Unknown error')}"
+        indices = list_indices()
+        health_reports = []
+
+        for index_name in indices:
+            stats = get_index_stats(index_name)
+            health_reports.append(stats)
+
+        opensearch_status = "healthy" if all(report.get("status") == "healthy" for report in health_reports) else "unhealthy"
     except Exception as e:
         opensearch_status = f"unhealthy: {str(e)}"
-        opensearch_stats = {"total_products": 0}
+        health_reports = []
 
     try:
         bedrock.list_foundation_models()
@@ -287,7 +292,7 @@ async def health_check():
     return {
         "status": "healthy" if opensearch_status == "healthy" and bedrock_status == "healthy" else "unhealthy",
         "opensearch": opensearch_status,
-        "opensearch_stats": opensearch_stats,
+        "opensearch_indices": health_reports,
         "bedrock": bedrock_status,
         "timestamp": time.time()
     }
