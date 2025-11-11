@@ -136,7 +136,10 @@ def _build_filter_query(filters: Optional[Dict[str, Any]] = None) -> Optional[Di
             else:
                 clauses.append({"term": {"in_stock": value}})
         elif field == "category":
-            clauses.append({"term": {"category": value}})
+            if isinstance(value, list):
+                clauses.append({"terms": {"category": value}})
+            else:
+                clauses.append({"term": {"category": value}})
         elif field == "price":
             if isinstance(value, dict):
                 range_clause: Dict[str, Any] = {}
@@ -150,6 +153,14 @@ def _build_filter_query(filters: Optional[Dict[str, Any]] = None) -> Optional[Di
                     range_clause["lte"] = value["$lte"]
                 if range_clause:
                     clauses.append({"range": {"price": range_clause}})
+        elif field == "tags":
+            if isinstance(value, list):
+                if len(value) > 1:
+                    clauses.append({"terms": {"tags": value}})
+                elif value:
+                    clauses.append({"term": {"tags": value[0]}})
+            else:
+                clauses.append({"term": {"tags": value}})
     if not clauses:
         return None
 
@@ -173,15 +184,16 @@ def search_products(
         "size": k,
         "query": {
             "knn": {
-                "field": "embedding",
-                "query_vector": query_embedding,
-                "k": k,
+                "embedding": {
+                    "vector": query_embedding,
+                    "k": k,
+                }
             }
         },
     }
 
     if filter_query:
-        search_body["query"]["knn"]["filter"] = filter_query
+        search_body["query"]["knn"]["embedding"]["filter"] = filter_query
 
     # Execute search
     start_time = time.time()
